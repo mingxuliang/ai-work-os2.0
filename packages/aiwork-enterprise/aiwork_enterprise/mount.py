@@ -373,7 +373,11 @@ def mount_enterprise(
         "jwt": False,
         "security_headers": False,
         "approval": False,
+        "security_layers": {},
         "governance": False,
+        # Cron
+        "cron_router": False,
+        "cron_status": {},
         # Enterprise data
         "token_usage": False,
         "department": False,
@@ -420,6 +424,21 @@ def mount_enterprise(
     if include_business:
         # ── Security tooling ─────────────────────────────────────────────────
         summary["approval"] = mount_approval(app)
+
+        # ── AIWork 4-layer security sandbox ───────────────────────────────────
+        try:
+            from aiwork_enterprise.security_bridge import mount_security_layer
+            summary["security_layers"] = mount_security_layer(app)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("security_bridge skipped: %s", exc)
+
+        # ── Cron (heartbeat + dream + user jobs) ─────────────────────────────
+        try:
+            from aiwork_enterprise.cron_bridge import mount_cron_router, cron_status
+            summary["cron_router"] = mount_cron_router(app)
+            summary["cron_status"] = cron_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("cron_bridge skipped: %s", exc)
 
         # ── Enterprise data ───────────────────────────────────────────────────
         summary["token_usage"] = mount_token_usage(app)
