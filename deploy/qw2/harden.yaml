@@ -1,0 +1,91 @@
+# Phase 4 — Loop / Governance / Sandbox / MCP Hardening Defaults
+# Apply via: aiwork-qw2 doctor  OR copy fields into workspace agent config.
+
+# ── Loop Engineering ───────────────────────────────────────────────────────────
+loop:
+  max_iterations: 40           # Hard cap per Loop run
+  doom_loop_gate: true         # Detect back-to-back identical calls → abort
+  scroll_context: true         # Enable Scroll Context (500k token window)
+  loop_timeout_seconds: 600    # 10-minute hard timeout per loop
+
+# ── Governance ────────────────────────────────────────────────────────────────
+governance:
+  execution_level: smart       # smart | paranoid | permissive
+  audit_level: all             # all | writes | none
+  seed_file: enterprise_defaults.yaml
+  # Per-agent policy override dir (auto-created by QwenPaw):
+  #   WORKING_DIR/governance/<sha256(agent_id)>/policy.yaml
+  auto_reload_policy: true     # Watch seed_file mtime for hot-reload
+
+# ── Sandbox ────────────────────────────────────────────────────────────────────
+sandbox:
+  enabled: true
+  default_shell_policy: ask    # ask | deny | allow
+  # Paths exempt from shell sandbox (matches enterprise_defaults.yaml allows)
+  trusted_prefixes:
+    - WORKSPACE_DIR/cache/
+    - WORKSPACE_DIR/skills/
+    - WORKSPACE_DIR/custom-skills/
+    - WORKSPACE_DIR/media/
+    - WORKSPACE_DIR/rag/
+    - WORKSPACE_DIR/vector_index/
+  deny_patterns:
+    - "rm -rf /*"
+    - "chmod 777 /*"
+    - "curl * | bash"
+
+# ── MCP ───────────────────────────────────────────────────────────────────────
+mcp:
+  allow_stdio: true
+  credential_encryption: true
+  # Allowlist specific MCP server IDs in production.
+  # Leave empty to allow all (dev only):
+  server_allowlist: []
+  # Deny tool name patterns (applied globally before per-server rules):
+  global_tool_denylist:
+    - "*delete_all*"
+    - "*drop_database*"
+    - "*truncate_table*"
+
+# ── Rate Limiting ──────────────────────────────────────────────────────────────
+rate_limit:
+  enabled: true                # Enforced via Redis token bucket
+  default_rpm: 60              # Requests per minute per user
+  admin_rpm: 200               # Requests per minute for admin users
+  burst: 10                    # Token bucket burst allowance
+  # Endpoints exempt from rate limit:
+  exempt_paths:
+    - /health
+    - /metrics
+    - /api/auth/jwt/login
+
+# ── Performance ───────────────────────────────────────────────────────────────
+performance:
+  uvicorn_workers: 1           # Keep 1 for in-process QwenPaw state
+  connection_pool_size: 20     # SQLAlchemy async pool
+  redis_max_connections: 100
+  minio_max_pool_connections: 20
+  # ReMe v0.4 cache (long-term memory prefix dedup):
+  reme_cache_ttl_seconds: 3600
+
+# ── Observability ──────────────────────────────────────────────────────────────
+observability:
+  log_tool_denies: true
+  alert_on_sandbox_escape_attempt: true
+  # Prometheus metrics endpoint: GET /metrics (if enabled in QwenPaw)
+  prometheus_enabled: true
+  # Structured JSON logs
+  log_format: json
+
+# ── Security Regression Checklist ────────────────────────────────────────────
+# Run before each production promotion.  Tick off in deployment PR.
+# checklist:
+#   - [ ] JWT secret rotated and loaded from AIWORK_JWT_SECRET
+#   - [ ] All /api/* routes return 401 without token (spot-check 5 endpoints)
+#   - [ ] AIWORK_MINIO_* creds NOT committed to git
+#   - [ ] `rm -rf /tmp` blocked by governance (run: aiwork-qw2 doctor --governance-test)
+#   - [ ] Loop doom-gate triggers at ≥3 identical back-to-back tool calls
+#   - [ ] MCP stdio only accepts allowlisted servers
+#   - [ ] /metrics endpoint NOT publicly reachable (firewall rule)
+#   - [ ] pgvector DB user has SELECT/INSERT/UPDATE on rag table only
+#   - [ ] Redis AUTH password set and AIWORK_REDIS_URL uses :password@host

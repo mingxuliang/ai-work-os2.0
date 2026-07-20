@@ -1,0 +1,5 @@
+﻿qwenpaw==2.0.0.post3
+agentscope==2.0.4.post1
+# Locked for AIWork-OS -> QwenPaw 2.0 upgrade (phase 0)
+# Baseline AIWork commit: 081c5b22ffd66cd9a8fdc3c0412dc0a77ea7574e
+# Baseline AIWork version: 1.1.5.post2

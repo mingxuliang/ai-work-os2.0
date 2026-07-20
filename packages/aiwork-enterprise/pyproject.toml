@@ -1,0 +1,38 @@
+[project]
+name = "aiwork-enterprise"
+version = "2.0.0"
+description = "AIWork-OS enterprise overlay for QwenPaw 2.0 kernel"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "aiomysql>=0.2.0",
+    "sqlalchemy[asyncio]>=2.0.0",
+    "PyJWT>=2.8.0",
+    "redis>=5.0.0",
+    "minio>=7.2.0",
+    "bcrypt>=4.0.0",
+    "PyYAML>=6.0",
+    "click>=8.0",
+    "uvicorn>=0.40.0",
+]
+
+[project.optional-dependencies]
+kernel = [
+    "qwenpaw==2.0.0.post3",
+]
+full = [
+    "aiwork-enterprise[kernel]",
+    "pgvector>=0.3.0",
+    "asyncpg>=0.29.0",
+    "psycopg2-binary>=2.9",
+]
+
+[project.scripts]
+aiwork-qw2 = "aiwork_enterprise.cli:main"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["aiwork_enterprise*"]

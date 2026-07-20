@@ -101,6 +101,39 @@ def app_cmd(
             SuppressPathAccessLogFilter(paths),
         )
 
+    # QwenPaw 2.0 kernel + enterprise overlay (AIWork Console UI unchanged)
+    kernel = os.environ.get("AIWORK_KERNEL", "").strip().lower()
+    if kernel in ("qwenpaw2", "qw2", "2", "2.0"):
+        try:
+            from aiwork_enterprise.env import (
+                apply_console_static_bridge,
+                apply_working_dir_bridge,
+            )
+
+            apply_working_dir_bridge()
+            apply_console_static_bridge()
+        except ImportError as exc:
+            raise click.ClickException(
+                "AIWORK_KERNEL=qwenpaw2 requires packages/aiwork-enterprise. "
+                "Install with: pip install -e ./packages/aiwork-enterprise "
+                f"({exc})",
+            ) from exc
+        os.environ.setdefault("QWENPAW_LOG_LEVEL", log_level)
+        click.echo(
+            "Starting AIWork-OS UI on QwenPaw 2.0 kernel "
+            "(enterprise overlay enabled)",
+            err=True,
+        )
+        uvicorn.run(
+            "aiwork_enterprise.app:app",
+            host=host,
+            port=port,
+            reload=reload,
+            workers=1,
+            log_level=log_level,
+        )
+        return
+
     uvicorn.run(
         "aiwork.app._app:app",
         host=host,

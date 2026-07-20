@@ -1,0 +1,30 @@
+version: '2.0'
+execution_level: smart
+audit_level: all
+user_rules:
+- match: Read(WORKSPACE_DIR/cache/**)
+  action: allow
+  reason: 'AIWork: template/cache reads'
+- match: Read(WORKSPACE_DIR/skills/**)
+  action: allow
+  reason: 'AIWork: workspace skills'
+- match: Read(WORKSPACE_DIR/media/**)
+  action: allow
+  reason: 'AIWork: media reads'
+- match: Write(WORKSPACE_DIR/cache/**)
+  action: allow
+  reason: 'AIWork: template/cache writes'
+- match: Write(WORKSPACE_DIR/media/**)
+  action: allow
+  reason: 'AIWork: media writes'
+- match: Bash(rm -rf /*)
+  action: deny
+  reason: 'Enterprise: block destructive root rm'
+- match: Bash(rm *)
+  action: ask
+  reason: 'Enterprise: ask before rm'
+sensitive_paths:
+- ~/.ssh/
+- /etc/shadow
+- '**/credentials*'
+- '**/*.pem'

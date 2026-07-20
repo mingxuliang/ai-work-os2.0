@@ -122,6 +122,11 @@ sip-livekit = [
 metrics = [
     "prometheus-fastapi-instrumentator>=7.0.0",
 ]
+# QwenPaw 2.0 kernel mode — keep AIWork Console UI + enterprise modules.
+# Also run: pip install -e ./packages/aiwork-enterprise
+qw2 = [
+    "qwenpaw==2.0.0.post3",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

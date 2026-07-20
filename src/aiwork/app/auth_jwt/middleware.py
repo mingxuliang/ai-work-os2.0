@@ -37,7 +37,9 @@ _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/assets/",
     "/logo.png",
     "/aiwork-symbol.svg",
+    "/qwenpaw-symbol.svg",
     "/api/plugins/",
+    "/api/frontend_plugin/",
     "/api/presale-templates/public/",
     "/api/rag/image-proxy/",
 )

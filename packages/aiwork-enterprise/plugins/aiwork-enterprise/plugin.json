@@ -1,0 +1,17 @@
+{
+  "id": "aiwork-enterprise",
+  "name": {
+    "zh-CN": "AIWork 企业扩展",
+    "en-US": "AIWork Enterprise Overlay"
+  },
+  "description": {
+    "zh-CN": "JWT/MySQL/MinIO/RAG/组织架构等企业能力挂载到 QwenPaw 2.0",
+    "en-US": "Mounts JWT/MySQL/MinIO/RAG/Org enterprise capabilities on QwenPaw 2.0"
+  },
+  "version": "2.0.0",
+  "plugin_type": "hook",
+  "qwenpaw": ">=2.0.0",
+  "entry_points": {
+    "backend": "plugin:plugin"
+  }
+}

@@ -14,9 +14,26 @@ if _env_path.exists():
 
 
 def _get_env(key: str, default: str = "") -> str:
-    """Look up an env var.
+    """Look up an env var with AIWORK_ → QWENPAW_ → COPAW_ fallback.
+
+    Accepts ``AIWORK_*`` keys (preferred). When missing, mirrors QwenPaw 2.0
+    dual-read so a single ``.env.qw2`` can drive both stacks.
     """
-    return os.environ.get(key, default)
+    if key in os.environ and os.environ[key] != "":
+        return os.environ[key]
+    suffix = None
+    if key.startswith("AIWORK_"):
+        suffix = key[len("AIWORK_") :]
+    elif key.startswith("QWENPAW_"):
+        suffix = key[len("QWENPAW_") :]
+    elif key.startswith("COPAW_"):
+        suffix = key[len("COPAW_") :]
+    if suffix is not None:
+        for prefix in ("AIWORK_", "QWENPAW_", "COPAW_"):
+            candidate = prefix + suffix
+            if candidate in os.environ and os.environ[candidate] != "":
+                return os.environ[candidate]
+    return default
 
 
 class EnvVarLoader:
@@ -80,13 +97,15 @@ class EnvVarLoader:
 
 
 # WORKING_DIR priority:
-# 1. AIWORK_WORKING_DIR env var is set → use it
-# 2. Default → ~/.aiwork
+# 1. AIWORK_WORKING_DIR / QWENPAW_WORKING_DIR / COPAW_WORKING_DIR
+# 2. Existing ~/.aiwork (enterprise data root)
+# 3. Default → ~/.aiwork
 _explicit_working_dir = _get_env("AIWORK_WORKING_DIR")
 if _explicit_working_dir:
     WORKING_DIR = Path(_explicit_working_dir).expanduser().resolve()
 else:
-    WORKING_DIR = Path("~/.aiwork").expanduser().resolve()
+    _aiwork_home = Path("~/.aiwork").expanduser()
+    WORKING_DIR = _aiwork_home.resolve()
 SECRET_DIR = (
     Path(
         EnvVarLoader.get_str(

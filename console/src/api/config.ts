@@ -3,7 +3,11 @@ declare const TOKEN: string;
 
 const AUTH_TOKEN_KEY = "qwenpaw_auth_token";
 const AUTH_TOKEN_SESSION_KEY = "qwenpaw_auth_token_session";
+/** Legacy AIWork keys — still read for QW2 upgrade compat */
+const AUTH_TOKEN_KEY_LEGACY = "aiwork_auth_token";
+const AUTH_TOKEN_SESSION_KEY_LEGACY = "aiwork_auth_token_session";
 export const AUTH_USER_KEY = "qwenpaw.auth.user_key";
+export const AUTH_USER_KEY_LEGACY = "aiwork.auth.user_key";
 
 /**
  * Get the full API URL with /api prefix
@@ -23,10 +27,14 @@ export function getApiUrl(path: string): string {
  * @returns API token string or empty string
  */
 export function getApiToken(): string {
-  const sessionToken = sessionStorage.getItem(AUTH_TOKEN_SESSION_KEY);
+  const sessionToken =
+    sessionStorage.getItem(AUTH_TOKEN_SESSION_KEY) ||
+    sessionStorage.getItem(AUTH_TOKEN_SESSION_KEY_LEGACY);
   if (sessionToken) return sessionToken;
 
-  const stored = localStorage.getItem(AUTH_TOKEN_KEY);
+  const stored =
+    localStorage.getItem(AUTH_TOKEN_KEY) ||
+    localStorage.getItem(AUTH_TOKEN_KEY_LEGACY);
   if (stored) return stored;
   return typeof TOKEN !== "undefined" ? TOKEN : "";
 }
@@ -38,12 +46,16 @@ export function getApiToken(): string {
  */
 export function setAuthToken(token: string, remember = true): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_TOKEN_KEY_LEGACY);
   sessionStorage.removeItem(AUTH_TOKEN_SESSION_KEY);
+  sessionStorage.removeItem(AUTH_TOKEN_SESSION_KEY_LEGACY);
 
   if (remember) {
     localStorage.setItem(AUTH_TOKEN_KEY, token);
+    localStorage.setItem(AUTH_TOKEN_KEY_LEGACY, token);
   } else {
     sessionStorage.setItem(AUTH_TOKEN_SESSION_KEY, token);
+    sessionStorage.setItem(AUTH_TOKEN_SESSION_KEY_LEGACY, token);
   }
 }
 
@@ -52,8 +64,11 @@ export function setAuthToken(token: string, remember = true): void {
  */
 export function clearAuthToken(): void {
   localStorage.removeItem(AUTH_TOKEN_KEY);
+  localStorage.removeItem(AUTH_TOKEN_KEY_LEGACY);
   sessionStorage.removeItem(AUTH_TOKEN_SESSION_KEY);
+  sessionStorage.removeItem(AUTH_TOKEN_SESSION_KEY_LEGACY);
   localStorage.removeItem(AUTH_USER_KEY);
+  localStorage.removeItem(AUTH_USER_KEY_LEGACY);
   if (typeof window !== "undefined") {
     window.currentUserId = undefined;
   }
