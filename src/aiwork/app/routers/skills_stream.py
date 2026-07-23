@@ -10,7 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from agentscope_runtime.engine.schemas.exception import (
+from aiwork.exceptions import (
     AppBaseException,
 )
 
@@ -179,13 +179,7 @@ async def ai_optimize_skill_stream(request: AIOptimizeSkillRequest):
     """
 
     async def generate():
-        # --- Prompt injection guard ---
-        from ...security.prompt_guard import PromptGuard, PromptInjectionError
-        # --- End guard ---
-
         try:
-            PromptGuard.scan_or_raise(request.content)
-
             model = get_model()
             if not model:
                 error_msg = json.dumps(
@@ -204,9 +198,19 @@ async def ai_optimize_skill_stream(request: AIOptimizeSkillRequest):
                 SYSTEM_PROMPTS["en"],
             )
 
+            from agentscope.message import Msg, TextBlock
+
             messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": request.content},
+                Msg(
+                    name="system",
+                    role="system",
+                    content=[TextBlock(type="text", text=system_prompt)],
+                ),
+                Msg(
+                    name="user",
+                    role="user",
+                    content=[TextBlock(type="text", text=request.content)],
+                ),
             ]
 
             response = await model(messages)
@@ -235,12 +239,6 @@ async def ai_optimize_skill_stream(request: AIOptimizeSkillRequest):
 
             yield f"data: {json.dumps({'done': True})}\n\n"
 
-        except PromptInjectionError:
-            error_msg = json.dumps(
-                {"error": "Request rejected: prompt injection detected."},
-                ensure_ascii=False,
-            )
-            yield f"data: {error_msg}\n\n"
         except Exception as e:
             logger.exception("AI skill optimization failed: %s", e)
             error_msg = json.dumps(

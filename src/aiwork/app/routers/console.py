@@ -5,72 +5,63 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
+import time
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncGenerator, Union
+from typing import Any, AsyncGenerator, Dict, Optional, Union
 
-from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
+from fastapi import (
+    APIRouter,
+    File,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
+from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
-from agentscope_runtime.engine.schemas.agent_schemas import AgentRequest
-from ...security.sandbox.context import parse_sandbox_enabled_value
+from aiwork.schemas import (
+    AgentRequest,
+    _coerce_content_item,
+)
 from ...utils.logging import LOG_FILE_PATH
 from ..agent_context import get_agent_for_request
-from ..auth_identity import get_authenticated_user_key
-from ..runner.title_generator import generate_and_update_title
-
-
-async def _extract_jwt_user(request: Request) -> str | None:
-    """Fallback: decode the JWT directly from the Authorization header.
-
-    Starlette's BaseHTTPMiddleware may not reliably propagate
-    ``request.state`` to downstream handlers (the ``call_next`` closure
-    captures the outer ``scope`` but the inner app receives a fresh
-    ``Request`` built from that scope).  When ``request.state.user_id`` is
-    absent we decode the token ourselves so the handler still gets the
-    authenticated identity.
-
-    Reads ``username`` and ``roles`` from the Redis session cache
-    (source of truth), falling back to the JWT payload when Redis
-    is unavailable.
-    """
-    from ..auth_jwt.jwt_utils import decode_token as jwt_decode_token
-    from ..auth_jwt.middleware import JWTAuthMiddleware
-    from ..auth_jwt.redis_client import get_session_user_info
-
-    token = JWTAuthMiddleware._extract_token(request)
-    if not token:
-        return None
-    try:
-        payload = await jwt_decode_token(token)
-        logger.debug("JWT payload: %s", payload)
-    except Exception:
-        logger.debug("Fallback JWT decode failed", exc_info=True)
-        return None
-    if not payload:
-        return None
-
-    # Try Redis session cache first (source of truth)
-    jti = payload.get("jti", "")
-    if jti:
-        user_info = await get_session_user_info(jti)
-        if user_info:
-            return user_info.get("username") or str(user_info.get("user_id", ""))
-
-    # Fallback to JWT payload
-    return payload.get("username") or payload.get("sub")
+from ..approvals.display import approval_display_fields
+from ..chats.title_generator import generate_and_update_title
+from ..utils import check_upload_size
 
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/console", tags=["console"])
 
-_DEFAULT_UPLOAD_MB = 300
-MAX_UPLOAD_BYTES = int(
-    os.environ.get("AIWORK_CONSOLE_UPLOAD_MAX_MB", _DEFAULT_UPLOAD_MB)
-) * 1024 * 1024
+
+# ── Background task store ──
+
+
+@dataclass
+class _BackgroundTask:
+    """In-memory state for a background chat task."""
+
+    status: str = "submitted"
+    started_at: Optional[float] = None
+    finished_at: Optional[float] = None
+    result: Optional[Dict[str, Any]] = None
+    asyncio_task: Optional[asyncio.Task] = None
+
+
+_bg_tasks: Dict[str, _BackgroundTask] = {}
+_bg_lock = asyncio.Lock()
+
+
+class MarkInboxReadRequest(BaseModel):
+    event_ids: list[str] = []
+    all: bool = False
+
+
 MAX_DEBUG_LOG_LINES = 1000
 
 
@@ -109,26 +100,11 @@ def _extract_placeholder_name(content_parts: list) -> tuple[str, str]:
     return first_text[:10], first_text
 
 
-def _read_execution_sandbox_enabled(
-    request_data: Union[AgentRequest, dict],
-) -> bool | None:
-    """Read chat-level sandbox toggle from console request body."""
-    if isinstance(request_data, dict):
-        return parse_sandbox_enabled_value(
-            request_data.get("execution_sandbox_enabled"),
-        )
-    return parse_sandbox_enabled_value(
-        getattr(request_data, "execution_sandbox_enabled", None),
-    )
-
-
 def _extract_session_and_payload(request_data: Union[AgentRequest, dict]):
     """Extract run_key (ChatSpec.id), session_id, and native payload.
 
     run_key must be ChatSpec.id (chat_id) so it matches list_chats/get_chat.
     """
-    execution_sandbox_enabled = _read_execution_sandbox_enabled(request_data)
-
     if isinstance(request_data, AgentRequest):
         channel_id = getattr(request_data, "channel", None) or "console"
         sender_id = request_data.user_id or "default"
@@ -146,21 +122,32 @@ def _extract_session_and_payload(request_data: Union[AgentRequest, dict]):
             if hasattr(content_part, "content"):
                 content_parts.extend(list(content_part.content or []))
             elif isinstance(content_part, dict) and "content" in content_part:
-                content_parts.extend(content_part["content"] or [])
+                # Coerce raw dicts to typed Content models so downstream
+                # getattr checks (e.g. _content_has_text) see real attrs.
+                content_parts.extend(
+                    _coerce_content_item(c)
+                    for c in (content_part["content"] or [])
+                )
+
+    meta: dict = {
+        "session_id": session_id,
+        "user_id": sender_id,
+    }
+
+    # Preserve request_context (e.g. session-level approval_level)
+    if isinstance(request_data, AgentRequest):
+        rc = getattr(request_data, "request_context", None)
+    else:
+        rc = request_data.get("request_context")
+    if isinstance(rc, dict) and rc:
+        meta["request_context"] = rc
 
     native_payload = {
         "channel_id": channel_id,
         "sender_id": sender_id,
         "content_parts": content_parts,
-        "meta": {
-            "session_id": session_id,
-            "user_id": sender_id,
-        },
+        "meta": meta,
     }
-    if execution_sandbox_enabled is not None:
-        native_payload["meta"]["execution_sandbox_enabled"] = (
-            execution_sandbox_enabled
-        )
     return native_payload
 
 
@@ -216,38 +203,6 @@ async def post_console_chat(
         native_payload = _extract_session_and_payload(request_data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-
-    # Override user_id with JWT identity when available.
-    # This ensures sessions are associated with the actual logged-in user
-    # rather than the client-supplied value (which defaults to "default").
-    #
-    # NOTE: BaseHTTPMiddleware in Starlette may not reliably propagate
-    # request.state to downstream handlers, so we use a fallback that
-    # decodes the JWT directly from the Authorization header.
-    jwt_user = getattr(request.state, "user_id", None)
-
-    logger.debug("JWT user_id: %s", jwt_user)
-    if not jwt_user:
-        jwt_user = await _extract_jwt_user(request)
-    if jwt_user:
-        native_payload["sender_id"] = jwt_user
-        native_payload["meta"]["user_id"] = jwt_user
-        logger.debug(
-            "JWT user applied: user=%s session=%s",
-            jwt_user,
-            native_payload["meta"].get("session_id", "")[:20],
-        )
-
-    # Resolve the effective user_id.  Prefer JWT, then fall back to the
-    # client-supplied value in the request body (which the JWT middleware
-    # already authenticated).  A missing user_id leads to zombie chat
-    # records that cannot be matched to their owner.
-    effective_user_id = jwt_user or ""
-    if not effective_user_id:
-        client_user_id = native_payload.get("meta", {}).get("user_id", "")
-        if client_user_id and client_user_id != "default":
-            effective_user_id = client_user_id
-
     session_id = console_channel.resolve_session_id(
         sender_id=native_payload["sender_id"],
         channel_meta=native_payload["meta"],
@@ -260,20 +215,9 @@ async def post_console_chat(
         native_payload["sender_id"],
         native_payload["channel_id"],
         name=name,
-        user_id=effective_user_id,
     )
-
-
-
     tracker = workspace.task_tracker
 
-    logger.debug(
-        "新会话: chat_id=%s session_id=%s user_id=%s agent_id=%s",
-        chat.id,
-        session_id,
-        native_payload["sender_id"],
-        workspace.agent_id,
-    )
     # Kick off an LLM-backed title generation in the background when the chat
     # was just created with the truncated placeholder. This runs detached so
     # the streaming response is never blocked by title generation latency.
@@ -335,66 +279,38 @@ async def post_console_chat_stop(
     request: Request,
     chat_id: str = Query(..., description="Chat id (ChatSpec.id) to stop"),
 ) -> dict:
-    """Stop the running chat. Only stops console-channel chats.
-
-    Third-party channel chats (wecom, wechat, feishu, dingtalk, etc.) are
-    intentionally NOT stopped by this endpoint to prevent the console UI from
-    accidentally cancelling in-progress IM channel tasks.
-    """
+    """Stop the running chat. Only stops when called."""
     logger.debug("[STOP API] Received stop request for chat_id=%s", chat_id)
     workspace = await get_agent_for_request(request)
-    chat_manager = workspace.chat_manager or getattr(workspace.runner, "_chat_manager", None)
 
-    _CONSOLE_ONLY_CHANNELS = {"console", ""}
-
-    # Resolve the real chat UUID (the caller may pass a session_id / timestamp)
-    resolved_id = chat_id
-    if chat_manager:
-        # Check if chat_id is already a known UUID
-        existing = await chat_manager.get_chat(chat_id)
-        if existing is None:
-            # Treat chat_id as a session_id and look up the console chat
-            resolved_id = (
-                await chat_manager.get_chat_id_by_session(
-                    session_id=chat_id,
-                    channel="console",
-                )
-            ) or chat_id
-            existing = await chat_manager.get_chat(resolved_id) if resolved_id != chat_id else None
-
-        # Guard: refuse to stop non-console channel tasks from this endpoint
-        if existing is not None:
-            chat_channel = getattr(existing, "channel", "console") or "console"
-            if chat_channel not in _CONSOLE_ONLY_CHANNELS:
-                logger.info(
-                    "[STOP API] Skipped stop for chat_id=%s: channel=%s is not console",
-                    resolved_id,
-                    chat_channel,
-                )
-                return {"stopped": False, "reason": f"channel '{chat_channel}' cannot be stopped from console"}
-
+    # Try to stop with the provided chat_id first
     logger.debug(
-        "[STOP API] Got workspace, calling task_tracker.request_stop for %s...",
-        resolved_id,
+        "[STOP API] Got workspace, calling task_tracker.request_stop...",
     )
-    stopped = await workspace.task_tracker.request_stop(resolved_id)
+    stopped = await workspace.task_tracker.request_stop(chat_id)
 
-    # If still not found and we haven't already resolved, try session fallback
-    if not stopped and resolved_id == chat_id and chat_manager:
+    # If not found, the chat_id might be a session_id (timestamp)
+    # Try to resolve it to the actual chat UUID
+    if not stopped:
         logger.debug(
-            "[STOP API] chat_id not found in tracker, trying session_id fallback...",
+            "[STOP API] chat_id not found in tracker, trying to resolve "
+            "from session_id...",
         )
-        fallback_id = await chat_manager.get_chat_id_by_session(
-            session_id=chat_id,
-            channel="console",
-        )
-        if fallback_id:
-            logger.debug(
-                "[STOP API] Resolved session_id=%s to chat_id=%s",
-                chat_id[:12] if len(chat_id) >= 12 else chat_id,
-                fallback_id,
+        chat_manager = workspace.chat_manager
+        if chat_manager:
+            resolved_chat_id = await chat_manager.get_chat_id_by_session(
+                session_id=chat_id,
+                channel="console",
             )
-            stopped = await workspace.task_tracker.request_stop(fallback_id)
+            if resolved_chat_id:
+                logger.debug(
+                    "[STOP API] Resolved session_id=%s to chat_id=%s",
+                    chat_id[:12] if len(chat_id) >= 12 else chat_id,
+                    resolved_chat_id,
+                )
+                stopped = await workspace.task_tracker.request_stop(
+                    resolved_chat_id,
+                )
 
     logger.debug(
         "[STOP API] task_tracker.request_stop returned: stopped=%s",
@@ -417,22 +333,10 @@ async def post_console_upload(
             status_code=503,
             detail="Channel Console not found",
         )
-
-    # Use user-scoped media directory for shared agent isolation
-    from ..agent_context import get_current_user_id
-    user_id = get_current_user_id()
-    if user_id:
-        media_dir = workspace.get_user_working_dir(user_id) / "media"
-    else:
-        media_dir = console_channel.media_dir
+    media_dir = console_channel.media_dir
     media_dir.mkdir(parents=True, exist_ok=True)
     data = await file.read()
-    if len(data) > MAX_UPLOAD_BYTES:
-        raise HTTPException(
-            status_code=400,
-            detail="File too large (max "
-            f"{MAX_UPLOAD_BYTES // (1024 * 1024)} MB)",
-        )
+    check_upload_size(data)
     safe_name = _safe_filename(file.filename or "file")
     stored_name = f"{uuid.uuid4().hex}_{safe_name}"
 
@@ -518,12 +422,16 @@ async def get_push_messages(
             "request_id": p.request_id,
             "session_id": p.session_id,
             "root_session_id": p.root_session_id,
+            "owner_agent_id": p.owner_agent_id,
             "agent_id": p.agent_id,
             "tool_name": p.tool_name,
+            **approval_display_fields(p),
             "severity": p.severity,
             "findings_count": p.findings_count,
             "findings_summary": p.result_summary,
             "tool_params": p.extra.get("tool_call", {}).get("input", {}),
+            "source_type": p.extra.get("source_type", "tool_guard"),
+            "driver": p.extra.get("driver"),
             "created_at": p.created_at,
             "timeout_seconds": p.timeout_seconds,
         }
@@ -531,3 +439,202 @@ async def get_push_messages(
     ]
 
     return {"messages": messages, "pending_approvals": approvals_data}
+
+
+@router.get("/inbox/events")
+async def get_inbox_events(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    source_type: str | None = Query(None),
+    status: str | None = Query(None),
+    agent_id: str | None = Query(None),
+    unread_only: bool = Query(False),
+):
+    from ..inbox_store import list_events
+
+    events = await list_events(
+        limit=limit,
+        offset=offset,
+        source_type=source_type,
+        status=status,
+        agent_id=agent_id,
+        unread_only=unread_only,
+    )
+    return {"events": events}
+
+
+@router.post("/inbox/read")
+async def post_mark_inbox_read(payload: MarkInboxReadRequest):
+    from ..inbox_store import mark_all_read, mark_read
+
+    if payload.all:
+        updated = await mark_all_read()
+    else:
+        updated = await mark_read(payload.event_ids)
+    return {"updated": updated}
+
+
+@router.delete("/inbox/events/{event_id}")
+async def delete_inbox_event(event_id: str):
+    from ..inbox_store import delete_event
+    from ..inbox_trace_store import delete_trace
+
+    deleted, run_id, run_id_still_referenced = await delete_event(event_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="event not found")
+    trace_deleted = False
+    if run_id and not run_id_still_referenced:
+        trace_deleted = await delete_trace(run_id)
+    return {
+        "deleted": True,
+        "trace_deleted": trace_deleted,
+        "run_id": run_id,
+    }
+
+
+@router.get("/inbox/traces/{run_id}")
+async def get_inbox_trace(run_id: str):
+    from ..inbox_trace_store import get_trace
+
+    trace = await get_trace(run_id)
+    if trace is None:
+        raise HTTPException(
+            status_code=404,
+            detail="trace not found",
+        )
+    return trace
+
+
+# ── Background chat task endpoints ──
+
+
+def _parse_sse_payload(line: str) -> Optional[Dict[str, Any]]:
+    """Parse a single SSE data line into a dict."""
+    stripped = line.strip()
+    if stripped.startswith("data: "):
+        try:
+            return json.loads(stripped[6:])
+        except (json.JSONDecodeError, ValueError):
+            return None
+    return None
+
+
+@router.post(
+    "/chat/task",
+    status_code=200,
+    summary="Submit a background chat task",
+)
+async def post_console_chat_task(
+    request_data: Union[AgentRequest, dict],
+    request: Request,
+) -> dict:
+    """Run an agent chat as a background task.
+
+    Returns a ``task_id`` immediately. Poll status via
+    ``GET /console/chat/task/{task_id}``.
+    """
+    workspace = await get_agent_for_request(request)
+    console_channel = await workspace.channel_manager.get_channel("console")
+    if console_channel is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Channel Console not found",
+        )
+
+    task_id = f"task-{uuid.uuid4().hex[:12]}"
+    native_payload = _extract_session_and_payload(request_data)
+    session_id = console_channel.resolve_session_id(
+        sender_id=native_payload["sender_id"],
+        channel_meta=native_payload["meta"],
+    )
+
+    task_timeout: Optional[float] = None
+    if isinstance(request_data, dict):
+        task_timeout = request_data.get("timeout")
+    elif hasattr(request_data, "timeout"):
+        task_timeout = getattr(request_data, "timeout", None)
+
+    bg = _BackgroundTask(
+        status="running",
+        started_at=time.time(),
+    )
+
+    async def _run() -> None:
+        last_response: Optional[Dict[str, Any]] = None
+        try:
+            async for sse_line in console_channel.stream_one(
+                native_payload,
+            ):
+                parsed = _parse_sse_payload(sse_line)
+                if parsed and parsed.get("type") != "turn_usage":
+                    last_response = parsed
+        except asyncio.CancelledError:
+            bg.status = "finished"
+            bg.finished_at = time.time()
+            bg.result = {
+                "status": "failed",
+                "error": {"message": "Task cancelled"},
+            }
+            return
+        except Exception as exc:
+            bg.status = "finished"
+            bg.finished_at = time.time()
+            bg.result = {
+                "status": "failed",
+                "error": {"message": str(exc)},
+            }
+            return
+
+        bg.status = "finished"
+        bg.finished_at = time.time()
+        if last_response is not None:
+            bg.result = {
+                "status": "completed",
+                "session_id": session_id,
+                **last_response,
+            }
+        else:
+            bg.result = {
+                "status": "completed",
+                "session_id": session_id,
+                "output": [],
+            }
+
+    atask = asyncio.create_task(_run())
+    bg.asyncio_task = atask
+
+    if task_timeout is not None and task_timeout > 0:
+
+        async def _timeout_guard() -> None:
+            await asyncio.sleep(task_timeout)
+            if not atask.done():
+                atask.cancel()
+
+        asyncio.create_task(_timeout_guard())
+
+    async with _bg_lock:
+        _bg_tasks[task_id] = bg
+
+    return {"task_id": task_id}
+
+
+@router.get(
+    "/chat/task/{task_id}",
+    status_code=200,
+    summary="Check background chat task status",
+)
+async def get_console_chat_task(task_id: str) -> dict:
+    """Return the current status of a background chat task."""
+    async with _bg_lock:
+        bg = _bg_tasks.get(task_id)
+    if bg is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Task not found: {task_id}",
+        )
+    response: Dict[str, Any] = {"status": bg.status}
+    if bg.started_at is not None:
+        response["started_at"] = bg.started_at
+    if bg.status == "finished" and bg.result is not None:
+        response["result"] = bg.result
+    return response

@@ -85,8 +85,8 @@ def _migrate_legacy_envs_json(path: Path) -> None:
 # not persisted envs.json.
 _PROTECTED_BOOTSTRAP_KEYS = frozenset(
     {
-        "AIWORK_WORKING_DIR",
-        "AIWORK_SECRET_DIR",
+        "QWENPAW_WORKING_DIR",
+        "QWENPAW_SECRET_DIR",
     },
 )
 
@@ -251,7 +251,14 @@ def load_envs_into_environ() -> dict[str, str]:
         Full persisted mapping from envs.json, including protected keys
         that are intentionally not injected into ``os.environ``.
     """
-    envs = load_envs()
+    from aiwork.backup._utils.safe_swap import (
+        cleanup_stale_restore_artifacts,
+        restore_process_lock,
+    )
+
+    with restore_process_lock():
+        cleanup_stale_restore_artifacts(_BOOTSTRAP_SECRET_DIR)
+        envs = load_envs()
     bootstrap_envs = {
         key: value
         for key, value in envs.items()

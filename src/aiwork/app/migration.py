@@ -31,7 +31,7 @@ from ..config.utils import load_config, save_config
 logger = logging.getLogger(__name__)
 
 _DEFAULT_AGENT_NAME = "Default Agent"
-_DEFAULT_AGENT_DESCRIPTION = "Default AiWork agent"
+_DEFAULT_AGENT_DESCRIPTION = "Default QwenPaw agent"
 
 # Workspace items to migrate: (name, is_directory)
 _WORKSPACE_ITEMS_TO_MIGRATE = [
@@ -125,7 +125,7 @@ def _do_migrate_legacy_workspace() -> bool:
     default_agent_config = AgentProfileConfig(
         id="default",
         name="Default Agent",
-        description="Default AiWork agent (migrated from legacy config)",
+        description="Default QwenPaw agent (migrated from legacy config)",
         workspace_dir=str(default_workspace),
         channels=config.channels if hasattr(config, "channels") else None,
         mcp=config.mcp if hasattr(config, "mcp") else None,
@@ -270,7 +270,7 @@ def _migrate_workspace_items_from_source(
     """Migrate all workspace items from a single source directory.
 
     Args:
-        source_dir: Source directory (e.g., ~/.aiwork or WORKING_DIR)
+        source_dir: Source directory (e.g., ~/.qwenpaw or WORKING_DIR)
         target_dir: Target directory (e.g., workspaces/default/)
         migrated_items: List to append migrated item names
     """
@@ -340,15 +340,15 @@ def _do_migrate_legacy_skills() -> bool:
     """Internal implementation of legacy skills migration."""
     from datetime import datetime, timezone
 
-    from ..agents.skills_manager import (
-        _copy_skill_dir,
-        _default_workspace_manifest,
-        _mutate_json,
-        ensure_skill_pool_initialized,
+    from ..agents.skill_system import ensure_skill_pool_initialized
+    from ..agents.skill_system.registry import reconcile_workspace_manifest
+    from ..agents.skill_system.store import (
+        copy_skill_dir,
+        default_workspace_manifest,
         get_pool_skill_manifest_path,
         get_workspace_skill_manifest_path,
         get_workspace_skills_dir,
-        reconcile_workspace_manifest,
+        mutate_json,
     )
 
     import hashlib
@@ -420,7 +420,7 @@ def _do_migrate_legacy_skills() -> bool:
                 target_dir,
             )
             return False
-        _copy_skill_dir(source_dir, target_dir)
+        copy_skill_dir(source_dir, target_dir)
         return True
 
     # --- Phase 1: Initialize pool ---
@@ -613,9 +613,9 @@ def _do_migrate_legacy_skills() -> bool:
                     changed += 1
             return changed
 
-        _mutate_json(
+        mutate_json(
             get_workspace_skill_manifest_path(workspace_dir),
-            _default_workspace_manifest(),
+            default_workspace_manifest(),
             _update,
         )
 
@@ -773,7 +773,7 @@ def _apply_legacy_qa_disable_for_migration(config) -> None:
         ref.enabled = False
         logger.info(
             "Disabled legacy builtin QA agent profile %r "
-            "(new AiWork builtin QA slot was created)",
+            "(new QwenPaw builtin QA slot was created)",
             legacy_id,
         )
     if config.agents.active_agent == legacy_id:
@@ -791,7 +791,7 @@ def ensure_qa_agent_exists() -> None:
 
     On **first creation** only, ``skills/`` is seeded from
     ``BUILTIN_QA_AGENT_SKILL_NAMES`` (e.g. ``guidance``,
-    ``aiwork_source_index``), and built-in tools are restricted (see
+    ``qwenpaw_source_index``), and built-in tools are restricted (see
     ``build_qa_agent_tools_config``).
     After that, the user may change skills and tools freely; we do not
     overwrite their choices on later startups.

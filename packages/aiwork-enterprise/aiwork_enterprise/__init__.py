@@ -1,8 +1,23 @@
 # -*- coding: utf-8 -*-
-"""AIWork-OS enterprise overlay for QwenPaw 2.0."""
+"""DEPRECATED: transitional overlay — kernel is now in-tree (1.x fork merge).
 
-__version__ = "2.0.0"
+Prefer::
 
-from .mount import mount_enterprise
+    python -m aiwork app
 
-__all__ = ["__version__", "mount_enterprise"]
+This package remains as a thin compatibility shim for old docs/scripts.
+"""
+from __future__ import annotations
+
+import warnings
+
+warnings.warn(
+    "aiwork-enterprise is deprecated; AIWork-OS now vendors QwenPaw 2.0 "
+    "in-tree under src/aiwork. Use `aiwork app` instead of "
+    "`aiwork_enterprise.cli app`.",
+    DeprecationWarning,
+    stacklevel=2,
+)
+
+__all__ = ["__version__"]
+__version__ = "2.0.0-deprecated"

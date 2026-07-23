@@ -4,7 +4,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Optional
 
-from ..models import CronJobSpec, JobsFile
+from ..models import CronExecutionRecord, CronJobSpec, JobsFile
 
 
 class BaseJobRepository(ABC):
@@ -20,19 +20,37 @@ class BaseJobRepository(ABC):
         """Persist all jobs to storage (should be atomic if possible)."""
         raise NotImplementedError
 
+    @abstractmethod
+    async def get_history(self, job_id: str) -> list[CronExecutionRecord]:
+        """Get execution history for a single job."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def append_history(
+        self,
+        job_id: str,
+        record: CronExecutionRecord,
+        *,
+        limit: int = 50,
+    ) -> list[CronExecutionRecord]:
+        """Append one execution record and keep at most ``limit`` records."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_history(self, job_id: str) -> None:
+        """Delete execution history of one job."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def prune_orphan_history(self, valid_job_ids: set[str]) -> None:
+        """Delete history files that no longer belong to existing jobs."""
+        raise NotImplementedError
+
     # ---- Optional but commonly needed convenience ops ----
 
-    async def list_jobs(
-        self,
-        owner_user_id: Optional[str] = None,
-    ) -> list[CronJobSpec]:
+    async def list_jobs(self) -> list[CronJobSpec]:
         jf = await self.load()
-        if owner_user_id is None:
-            return jf.jobs
-        return [
-            j for j in jf.jobs
-            if j.owner_user_id is None or j.owner_user_id == owner_user_id
-        ]
+        return jf.jobs
 
     async def get_job(self, job_id: str) -> Optional[CronJobSpec]:
         jf = await self.load()

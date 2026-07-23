@@ -11,7 +11,7 @@ from typing import Any, Dict, Optional, Union
 import paho.mqtt.client as mqtt
 from paho.mqtt import MQTTException
 
-from agentscope_runtime.engine.schemas.agent_schemas import (
+from aiwork.schemas import (
     TextContent,
     ContentType,
 )
@@ -52,16 +52,22 @@ class MQTTChannel(BaseChannel):
         tls_certfile: Optional[str] = None,
         tls_keyfile: Optional[str] = None,
         on_reply_sent: OnReplySent = None,
-        show_tool_details: bool = False,
-        filter_tool_messages: bool = True,
+        show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
+        access_control_dm: bool = False,
+        access_control_group: bool = False,
     ):
         super().__init__(
             process,
             on_reply_sent=on_reply_sent,
             show_tool_details=show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
+            access_control_dm=access_control_dm,
+            access_control_group=access_control_group,
         )
 
         self.enabled = enabled
@@ -124,8 +130,9 @@ class MQTTChannel(BaseChannel):
         process: ProcessHandler,
         config: Union[MQTTChannelConfig, dict],
         on_reply_sent: OnReplySent = None,
-        show_tool_details: bool = False,
-        filter_tool_messages: bool = True,
+        show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
     ) -> "MQTTChannel":
         if isinstance(config, dict):
@@ -163,8 +170,14 @@ class MQTTChannel(BaseChannel):
                 transport=config.get("transport", "tcp"),
                 on_reply_sent=on_reply_sent,
                 show_tool_details=show_tool_details,
-                filter_tool_messages=filter_tool_messages,
                 filter_thinking=filter_thinking,
+                no_text_debounce=no_text_debounce,
+                access_control_dm=bool(
+                    config.get("access_control_dm", False),
+                ),
+                access_control_group=bool(
+                    config.get("access_control_group", False),
+                ),
             )
         port = int(config.port) if config.port else 1883
 
@@ -191,7 +204,14 @@ class MQTTChannel(BaseChannel):
             on_reply_sent=on_reply_sent,
             show_tool_details=show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
+            access_control_dm=bool(
+                getattr(config, "access_control_dm", False),
+            ),
+            access_control_group=bool(
+                getattr(config, "access_control_group", False),
+            ),
         )
 
     def _validate_config(self):

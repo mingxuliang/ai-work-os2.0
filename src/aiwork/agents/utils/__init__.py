@@ -32,8 +32,9 @@ from .file_handling import (
 
 # Message processing
 from .message_processing import (
+    is_first_user_interaction,
+    prepend_to_message_content,
     process_file_and_media_blocks_in_message,
-    process_llm_output_urls_in_message,
 )
 
 # Message request normalizer
@@ -50,6 +51,11 @@ from .setup_utils import (
     copy_workspace_md_files,
     normalize_agent_language,
 )
+
+# Context stats
+from .context_stats import estimate_context_tokens, format_history_str
+from .as_msg_handler import AsMsgHandler
+from .as_msg_stat import AsMsgStat, AsBlockStat
 
 # Token counting
 from .token_counter import get_token_counter
@@ -77,7 +83,8 @@ __all__ = [
     "download_file_from_url",
     # Message processing
     "process_file_and_media_blocks_in_message",
-    "process_llm_output_urls_in_message",
+    "is_first_user_interaction",
+    "prepend_to_message_content",
     # Message request normalizer
     "normalize_messages_for_model_request",
     # Registry
@@ -89,6 +96,12 @@ __all__ = [
     "copy_workspace_md_files",
     # Setup utilities
     "normalize_agent_language",
+    # Context stats
+    "AsMsgHandler",
+    "AsMsgStat",
+    "AsBlockStat",
+    "estimate_context_tokens",
+    "format_history_str",
     # Token counting
     "get_token_counter",
     # Tool message utilities

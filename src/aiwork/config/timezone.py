@@ -1,13 +1,9 @@
 # -*- coding: utf-8 -*-
-"""Detect the system IANA timezone and provide unified timezone utilities.
+"""Detect the system IANA timezone.
 
 Kept in its own module to avoid circular imports between config.py and
 utils.py.  Uses only the standard library; always returns a valid string
-(falls back to ``"Asia/Shanghai"``).
-
-Centralized timezone helpers — every other module should get the user
-timezone through the functions exported here rather than reading config
-directly or hardcoding offsets like ``timezone(timedelta(hours=8))``.
+(falls back to ``"UTC"``).
 """
 
 from __future__ import annotations
@@ -73,16 +69,16 @@ def normalize_tz(name: str) -> Optional[str]:
 def detect_system_timezone() -> str:
     """Return the IANA timezone name of the host.
 
-    Falls back to ``"Asia/Shanghai"`` when detection fails.  This function
+    Falls back to ``"UTC"`` when detection fails.  This function
     must *never* raise — any unexpected error is swallowed.
     """
     try:
         return _detect_system_timezone_inner()
     except Exception:
-        return "Asia/Shanghai"
+        return "UTC"
 
 
-def _detect_system_timezone_inner() -> str:  # noqa: R0911
+def _detect_system_timezone_inner() -> str:
     probes = [_probe_python, _probe_env]
     if os.name == "nt":
         probes.append(_probe_windows_registry)
@@ -109,7 +105,7 @@ def _detect_system_timezone_inner() -> str:  # noqa: R0911
                 "Probe returned invalid timezone %r, skipping",
                 raw,
             )
-    return "Asia/Shanghai"
+    return "UTC"
 
 
 def _probe_python() -> Optional[str]:
@@ -261,64 +257,37 @@ def _probe_timedatectl() -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Centralized user-timezone helpers
+# User-timezone helpers (AIWork enterprise modules)
 # ---------------------------------------------------------------------------
-# Every other module should get the user timezone through the functions below
-# rather than reading config directly or hardcoding offsets like
-# ``timezone(timedelta(hours=8))``.
 
 
 def get_user_timezone() -> ZoneInfo:
-    """Return the configured user timezone as a ``ZoneInfo`` object.
-
-    Reads ``user_timezone`` from the global config.  Falls back to
-    ``"Asia/Shanghai"`` when the config is unavailable or the timezone
-    name is invalid.  This function must *never* raise.
-    """
+    """Return configured user timezone; never raises."""
     try:
         from .utils import load_config  # lazy: avoid circular import
 
-        name = load_config().user_timezone or "Asia/Shanghai"
+        name = getattr(load_config(), "user_timezone", None) or "Asia/Shanghai"
     except Exception:
         name = "Asia/Shanghai"
     try:
         return ZoneInfo(name)
     except (ZoneInfoNotFoundError, KeyError, ValueError):
-        logger.warning(
-            "Invalid timezone %r in config, falling back to Asia/Shanghai",
-            name,
-        )
         return ZoneInfo("Asia/Shanghai")
 
 
 def get_user_timezone_name() -> str:
-    """Return the configured user timezone IANA name (e.g. ``"Asia/Shanghai"``).
-
-    Falls back to ``"Asia/Shanghai"``.  Never raises.
-    """
     try:
-        from .utils import load_config  # lazy: avoid circular import
+        from .utils import load_config
 
-        return load_config().user_timezone or "Asia/Shanghai"
+        return getattr(load_config(), "user_timezone", None) or "Asia/Shanghai"
     except Exception:
         return "Asia/Shanghai"
 
 
 def get_user_now() -> datetime:
-    """Return the current datetime in the configured user timezone.
-
-    The returned datetime is **timezone-aware** (``tzinfo`` is set to the
-    user's ``ZoneInfo``).  Falls back to UTC on any error.
-    """
     return datetime.now(get_user_timezone())
 
 
 def get_user_now_naive() -> datetime:
-    """Return the current datetime in the configured user timezone,
-    **without** ``tzinfo`` (naive).
-
-    This is the correct helper for SQLAlchemy ``DateTime`` columns that
-    do *not* use ``timezone=True`` — the stored value reflects the user's
-    local wall-clock time rather than UTC or server time.
-    """
+    """Naive local wall-clock for SQLAlchemy DateTime columns."""
     return get_user_now().replace(tzinfo=None)

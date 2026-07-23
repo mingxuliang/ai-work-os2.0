@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Extensible hooks for `aiwork doctor`
+"""Extensible hooks for `qwenpaw doctor`
 (entry points + programmatic registration).
 
 Plugins can expose a setuptools entry point in group ``aiwork.doctor``::

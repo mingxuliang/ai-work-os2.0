@@ -29,8 +29,9 @@ class VoiceChannel(BaseChannel):
         self,
         process: ProcessHandler,
         on_reply_sent: OnReplySent = None,
-        show_tool_details: bool = False,
-        filter_tool_messages: bool = True,
+        show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
     ) -> None:
         super().__init__(
@@ -38,6 +39,7 @@ class VoiceChannel(BaseChannel):
             on_reply_sent,
             show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
         )
         self.session_mgr = CallSessionManager()
@@ -56,8 +58,9 @@ class VoiceChannel(BaseChannel):
         process: ProcessHandler,
         config: Any,
         on_reply_sent: OnReplySent = None,
-        show_tool_details: bool = False,
-        filter_tool_messages: bool = True,
+        show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
     ) -> "VoiceChannel":
         instance = cls(
@@ -65,6 +68,7 @@ class VoiceChannel(BaseChannel):
             on_reply_sent,
             show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
         )
         instance._config = config
@@ -202,7 +206,7 @@ class VoiceChannel(BaseChannel):
         native_payload: Any,
     ) -> Any:
         """Convert a voice payload dict to AgentRequest."""
-        from agentscope_runtime.engine.schemas.agent_schemas import (
+        from aiwork.schemas import (
             AgentRequest,
             Message,
             MessageType,
@@ -212,12 +216,6 @@ class VoiceChannel(BaseChannel):
         )
 
         text = native_payload.get("transcript", "")
-        # --- Prompt injection guard ---
-        if text.strip():
-            from ....security.prompt_guard import PromptGuard
-            PromptGuard.scan_or_raise(text)
-        # --- End guard ---
-
         session_id = native_payload.get("session_id", "")
         user_id = native_payload.get("from_number", "")
 

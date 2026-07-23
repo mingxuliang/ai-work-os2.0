@@ -7,7 +7,10 @@
 | AIWork version | `1.1.5.post2` |
 | Locked QwenPaw | `2.0.0.post3` (see [qwenpaw2.lock.txt](qwenpaw2.lock.txt)) |
 | Locked AgentScope | `2.0.4.post1` |
-| Architecture | AIWork Console UI + QwenPaw 2.0 kernel + `aiwork-enterprise` overlay |
+| Architecture | **In-tree fork**: AIWork Console + `src/aiwork` (QwenPaw 2.0.0.post3 renamed) + native enterprise mounts |
+| Pre-merge tag | `aiwork-1.1.5-pre-merge` |
+| Inventory | [08-enterprise-migrate-inventory.md](08-enterprise-migrate-inventory.md) |
+| Upstream sync | [09-upstream-sync.md](09-upstream-sync.md) |
 
 ## Rollback point
 

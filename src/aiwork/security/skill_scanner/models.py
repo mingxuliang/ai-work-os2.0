@@ -208,22 +208,6 @@ class ScanResult:
                 return sev
         return Severity.SAFE
 
-    @property
-    def recommend_sandbox(self) -> bool:
-        """True when risky HIGH/CRITICAL findings suggest sandbox isolation."""
-        risky_categories = {
-            ThreatCategory.COMMAND_INJECTION,
-            ThreatCategory.DATA_EXFILTRATION,
-            ThreatCategory.UNAUTHORIZED_TOOL_USE,
-            ThreatCategory.RESOURCE_ABUSE,
-            ThreatCategory.MALWARE,
-        }
-        risky_severities = {Severity.HIGH, Severity.CRITICAL}
-        return any(
-            f.severity in risky_severities and f.category in risky_categories
-            for f in self.findings
-        )
-
     def get_findings_by_severity(self, severity: Severity) -> list[Finding]:
         return [f for f in self.findings if f.severity == severity]
 
@@ -247,5 +231,4 @@ class ScanResult:
         }
         if self.analyzers_failed:
             result["analyzers_failed"] = self.analyzers_failed
-        result["recommend_sandbox"] = self.recommend_sandbox
         return result

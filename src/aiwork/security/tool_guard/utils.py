@@ -68,7 +68,7 @@ def resolve_guarded_tools(
 
     Priority:
     1) constructor-provided ``user_defined``
-    2) ``AIWORK_TOOL_GUARD_TOOLS`` env var
+    2) ``QWENPAW_TOOL_GUARD_TOOLS`` env var
     3) ``config.json`` -> ``security.tool_guard.guarded_tools``
     4) built-in high-risk default set
 
@@ -80,7 +80,7 @@ def resolve_guarded_tools(
     if user_defined is not None:
         return _parse_guarded_tokens(user_defined)
 
-    raw = EnvVarLoader.get_str("AIWORK_TOOL_GUARD_TOOLS") or None
+    raw = EnvVarLoader.get_str("QWENPAW_TOOL_GUARD_TOOLS") or None
     if raw is not None:
         normalized = raw.strip().lower()
         if normalized in {"*", "all"}:
@@ -103,7 +103,7 @@ def resolve_denied_tools(
 
     Priority:
     1) constructor-provided ``user_defined``
-    2) ``AIWORK_TOOL_GUARD_DENIED_TOOLS`` env var (comma-separated)
+    2) ``QWENPAW_TOOL_GUARD_DENIED_TOOLS`` env var (comma-separated)
     3) ``config.json`` -> ``security.tool_guard.denied_tools``
     4) built-in default (empty)
 
@@ -115,13 +115,43 @@ def resolve_denied_tools(
     if user_defined is not None:
         return set(user_defined)
 
-    raw = EnvVarLoader.get_str("AIWORK_TOOL_GUARD_DENIED_TOOLS") or None
+    raw = EnvVarLoader.get_str("QWENPAW_TOOL_GUARD_DENIED_TOOLS") or None
     if raw is not None:
         return {t.strip() for t in raw.split(",") if t.strip()}
 
     cfg = _load_config_tool_guard()
     if cfg is not None and cfg.denied_tools:
         return set(cfg.denied_tools)
+
+    return set()
+
+
+def resolve_auto_denied_rules(
+    user_defined: set[str] | list[str] | tuple[str, ...] | None = None,
+) -> set[str]:
+    """Resolve rule IDs that should trigger unconditional auto-deny.
+
+    Priority:
+    1) constructor-provided ``user_defined``
+    2) ``QWENPAW_TOOL_GUARD_AUTO_DENIED_RULES`` env var (comma-separated)
+    3) ``config.json`` -> ``security.tool_guard.auto_denied_rules``
+    4) built-in default (empty)
+
+    Returns
+    -------
+    set[str]
+        Rule IDs that should auto-reject tool calls once matched.
+    """
+    if user_defined is not None:
+        return {r.strip() for r in user_defined if r and r.strip()}
+
+    raw = EnvVarLoader.get_str("QWENPAW_TOOL_GUARD_AUTO_DENIED_RULES") or None
+    if raw is not None:
+        return {r.strip() for r in raw.split(",") if r.strip()}
+
+    cfg = _load_config_tool_guard()
+    if cfg is not None and cfg.auto_denied_rules:
+        return {r.strip() for r in cfg.auto_denied_rules if r.strip()}
 
     return set()
 

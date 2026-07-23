@@ -13,8 +13,7 @@ import aiofiles
 import aiofiles.os
 import orjson
 
-from ..app.runner.repo.multi_user_repo import MultiUserChatRepository
-from ..app.runner.session import sanitize_filename
+from ..app.chats.repo import JsonChatRepository
 from ..token_usage import get_token_usage_manager
 from .models import (
     AgentStatsSummary,
@@ -47,14 +46,28 @@ def _should_skip_by_mtime(
     return False
 
 
+def _extract_session_messages(session_data: dict) -> list:
+    """Return raw message dicts/tuples from a session state, 1.x or 2.0."""
+    agent_raw = session_data.get("agent", {})
+    # 2.0: messages live on agent.state.context
+    state_raw = agent_raw.get("state")
+    if isinstance(state_raw, dict):
+        ctx = state_raw.get("context")
+        if isinstance(ctx, list) and ctx:
+            return ctx
+    # 1.x fallback
+    memory_raw = agent_raw.get("memory", {})
+    if isinstance(memory_raw, dict):
+        return memory_raw.get("memories") or memory_raw.get("content") or []
+    return []
+
+
 def _should_skip_by_content_range(
     session_data: dict,
     start_date_str: str,
     end_date_str: str,
 ) -> bool:
-    memories = (
-        session_data.get("agent", {}).get("memory", {}).get("memories")
-    ) or session_data.get("agent", {}).get("memory", {}).get("content", [])
+    memories = _extract_session_messages(session_data)
 
     if not memories:
         return True
@@ -71,7 +84,7 @@ def _should_skip_by_content_range(
         if not isinstance(msg_data, dict):
             continue
 
-        timestamp = msg_data.get("timestamp")
+        timestamp = msg_data.get("created_at") or msg_data.get("timestamp")
         if timestamp:
             timestamps.append(str(timestamp)[:10])
 
@@ -109,9 +122,7 @@ def _process_session_file(
     tool_call_count = 0
     has_messages_in_range = False
     try:
-        memories = (
-            session_data.get("agent", {}).get("memory", {}).get("memories")
-        ) or session_data.get("agent", {}).get("memory", {}).get("content", [])
+        memories = _extract_session_messages(session_data)
 
         stats = channel_stats.setdefault(
             channel,
@@ -134,7 +145,7 @@ def _process_session_file(
             if not isinstance(msg_data, dict):
                 continue
 
-            timestamp = msg_data.get("timestamp")
+            timestamp = msg_data.get("created_at") or msg_data.get("timestamp")
             if not timestamp:
                 continue
 
@@ -162,10 +173,12 @@ def _process_session_file(
 
             if isinstance(content, list):
                 for block in content:
-                    if (
-                        isinstance(block, dict)
-                        and block.get("type") == "tool_use"
-                    ):
+                    btype = (
+                        block.get("type")
+                        if isinstance(block, dict)
+                        else getattr(block, "type", None)
+                    )
+                    if btype in ("tool_use", "tool_call"):
                         ds["tool_calls"] += 1
                         tool_call_count += 1
 
@@ -188,6 +201,7 @@ class AgentStatsService:
         start_date: date,
         end_date: date,
     ) -> AgentStatsSummary:
+        chats_file = workspace_dir / "chats.json"
         sessions_dir = workspace_dir / "sessions"
 
         daily_stats: dict[str, dict] = {}
@@ -215,89 +229,48 @@ class AgentStatsService:
         active_sessions: dict[str, set[str]] = {}
         total_active_sessions = 0
 
-        session_file_to_channel: dict[str, str] = {}
+        if chats_file.exists():
+            try:
+                repo = JsonChatRepository(chats_file)
+                chats = await repo.list_chats()
+                for chat in chats:
+                    if chat.created_at is None:
+                        continue
+                    chat_date = chat.created_at.date()
+                    if start_date <= chat_date <= end_date:
+                        date_str = chat_date.isoformat()
+                        daily_stats[date_str]["chats"] += 1
+            except Exception as e:
+                logger.warning("Failed to load chat statistics: %s", e)
 
-        async def _load_chats_from_repo(repo):
-            """Load chats and populate session_file_to_channel + daily_stats."""
-            chats = await repo.list_chats()
-            for chat in chats:
-                ch = chat.channel or "console"
-                safe_sid = sanitize_filename(chat.session_id)
-                safe_uid = (
-                    sanitize_filename(chat.user_id) if chat.user_id else ""
-                )
-                # Legacy flat path key
-                session_file_to_channel[safe_sid] = ch
-                if safe_uid:
-                    session_file_to_channel[f"{safe_uid}_{safe_sid}"] = ch
-                # New user-scoped path key (stem is just session_id)
-                # Will be matched when scanning user session dirs
-                if safe_uid:
-                    session_file_to_channel[f"{safe_uid}/{safe_sid}"] = ch
-                if chat.created_at is None:
-                    continue
-                chat_date = chat.created_at.date()
-                if start_date <= chat_date <= end_date:
-                    date_str = chat_date.isoformat()
-                    daily_stats[date_str]["chats"] += 1
-
-        # Load chats from workspace (legacy + per-user files)
-        try:
-            repo = MultiUserChatRepository(workspace_dir)
-            await _load_chats_from_repo(repo)
-        except Exception as e:
-            logger.warning("Failed to load chat statistics: %s", e)
-
-        # Collect session files from both legacy and per-user dirs
-        session_files: list[Path] = []
-
-        # Legacy flat sessions dir
+        # pylint: disable=too-many-nested-blocks
         if sessions_dir.exists():
             try:
-                session_names = await aiofiles.os.listdir(sessions_dir)
-                session_files.extend(
-                    sessions_dir / name
-                    for name in session_names
-                    if name.endswith(".json")
-                )
-            except Exception as e:
-                logger.debug("Failed to scan legacy sessions dir: %s", e)
+                session_files = []
 
-        # Per-user sessions dirs (users/{user_id}/sessions/*.json)
-        users_dir = workspace_dir / "users"
-        if users_dir.exists():
-            try:
-                for user_entry in await aiofiles.os.listdir(users_dir):
-                    user_sessions_dir = (
-                        users_dir / user_entry / "sessions"
-                    )
-                    if user_sessions_dir.exists():
+                # Scan root sessions directory for legacy files
+                channel_names = await aiofiles.os.listdir(sessions_dir)
+                for channel_name in channel_names:
+                    channel_path = sessions_dir / channel_name
+                    if await aiofiles.os.path.isdir(channel_path):
                         try:
-                            names = await aiofiles.os.listdir(
-                                user_sessions_dir,
+                            channel_files = await aiofiles.os.listdir(
+                                channel_path,
                             )
-                            session_files.extend(
-                                user_sessions_dir / name
-                                for name in names
-                                if name.endswith(".json")
-                            )
+                            for channel_file in channel_files:
+                                session_file = channel_path / channel_file
+                                if session_file.name.endswith(".json"):
+                                    session_files.append(session_file)
                         except Exception as e:
                             logger.debug(
-                                "Failed to scan user sessions %s: %s",
-                                user_sessions_dir,
+                                "Failed to scan channel directory %s: %s",
+                                channel_path,
                                 e,
                             )
-            except Exception as e:
-                logger.debug("Failed to scan user session dirs: %s", e)
 
-        # Process all collected session files
-        if session_files:
-            try:
                 session_fd_sem = asyncio.Semaphore((os.cpu_count() or 4) * 2)
 
-                async def _process_one(
-                    session_file: Path,
-                ) -> tuple[int, bool]:
+                async def _process_one(session_file: Path) -> tuple[int, bool]:
                     async with session_fd_sem:
                         if _should_skip_by_mtime(
                             session_file,
@@ -328,22 +301,9 @@ class AgentStatsService:
                         ):
                             return 0, False
 
-                        # For user-scoped files: stem is session_id,
-                        # key is "user_id/session_id"
-                        # For legacy files: stem is "user_id_session_id"
                         stem = session_file.stem
-                        parent_name = session_file.parent.name
-                        if parent_name == "sessions":
-                            # Legacy flat path
-                            channel = session_file_to_channel.get(
-                                stem, "console",
-                            )
-                        else:
-                            # User-scoped: parent is user_id
-                            key = f"{parent_name}/{stem}"
-                            channel = session_file_to_channel.get(
-                                key, "console",
-                            )
+                        # Check if session is in a channel subdirectory
+                        channel = session_file.parent.name
 
                         return _process_session_file(
                             session_data,

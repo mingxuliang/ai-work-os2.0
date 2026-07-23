@@ -164,15 +164,15 @@ def _process_table() -> list[tuple[int, str]]:
     return rows
 
 
-def _matches_aiwork_cli_command(command: str, *subcommands: str) -> bool:
-    """Return whether command line looks like a AiWork CLI invocation."""
+def _matches_qwenpaw_cli_command(command: str, *subcommands: str) -> bool:
+    """Return whether command line looks like a QwenPaw CLI invocation."""
     lowered = f" {command.lower()}"
     return any(
         pattern in lowered
         for subcommand in subcommands
         for pattern in (
-            f" -m aiwork {subcommand}",
-            f" aiwork {subcommand}",
+            f" -m qwenpaw {subcommand}",
+            f" qwenpaw {subcommand}",
             f"__main__.py {subcommand}",
             f'aiwork.exe" {subcommand}',
             f"aiwork.exe {subcommand}",
@@ -180,15 +180,15 @@ def _matches_aiwork_cli_command(command: str, *subcommands: str) -> bool:
     )
 
 
-def _is_aiwork_service_command(command: str) -> bool:
-    """Return whether the command line looks like a local AiWork app."""
-    return _matches_aiwork_cli_command(command, "app")
+def _is_qwenpaw_service_command(command: str) -> bool:
+    """Return whether the command line looks like a local QwenPaw app."""
+    return _matches_qwenpaw_cli_command(command, "app")
 
 
-def _is_aiwork_wrapper_process(name: str, command: str) -> bool:
-    """Return whether the process looks like a AiWork CLI wrapper."""
+def _is_qwenpaw_wrapper_process(name: str, command: str) -> bool:
+    """Return whether the process looks like a QwenPaw CLI wrapper."""
     lowered_name = name.lower().removesuffix(".exe")
-    return lowered_name == "aiwork" or _matches_aiwork_cli_command(
+    return lowered_name == "aiwork" or _matches_qwenpaw_cli_command(
         command,
         "app",
         "desktop",
@@ -210,7 +210,7 @@ def _base_url(host: str, port: int) -> str:
 
 
 def _candidate_hosts(host: str | None) -> list[str]:
-    """Return host variants that can reach a local AiWork service."""
+    """Return host variants that can reach a local QwenPaw service."""
     if not host:
         return []
 

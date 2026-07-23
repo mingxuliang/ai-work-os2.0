@@ -176,7 +176,7 @@ class LiveKitBackend:
                 api_key=self._api_key,
                 api_secret=self._api_secret,
             )
-            .with_identity("aiwork-sip-agent")
+            .with_identity("qwenpaw-sip-agent")
             .with_grants(
                 lk_api.VideoGrants(
                     room_join=True,
@@ -195,7 +195,7 @@ class LiveKitBackend:
             num_channels=1,
         )
         track = rtc.LocalAudioTrack.create_audio_track(
-            "aiwork-tts",
+            "qwenpaw-tts",
             audio_source,
         )
         self._audio_source = audio_source

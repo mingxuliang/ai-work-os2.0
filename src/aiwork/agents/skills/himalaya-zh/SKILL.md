@@ -4,7 +4,7 @@ description: "通过 IMAP/SMTP 管理邮件的命令行工具。使用 `himalaya
 homepage: https://github.com/pimalaya/himalaya
 metadata:
   builtin_skill_version: "1.3"
-  aiwork:
+  qwenpaw:
     emoji: "📧"
     requires:
       bins:

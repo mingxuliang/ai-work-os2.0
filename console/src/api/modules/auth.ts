@@ -18,12 +18,28 @@ export interface AuthStatusResponse {
 async function fetchJwtAuthEnabled(): Promise<boolean> {
   try {
     const res = await fetch(getApiUrl("/auth/jwt/status"));
-    if (!res.ok) return false;
-    const data = (await res.json()) as { enabled?: boolean };
-    return Boolean(data.enabled);
+    if (res.ok) {
+      const data = (await res.json()) as { enabled?: boolean; mode?: string };
+      return data.enabled !== false && data.mode !== "legacy";
+    }
   } catch {
-    return false;
+    /* fall through */
   }
+  try {
+    const res = await fetch(getApiUrl("/auth/status"));
+    if (res.ok) {
+      const data = (await res.json()) as {
+        enabled?: boolean;
+        mode?: string;
+      };
+      if (data.mode === "jwt") return true;
+      return Boolean(data.enabled);
+    }
+  } catch {
+    /* fall through */
+  }
+  // QwenPaw 2.0 + enterprise overlay always uses JWT when status endpoints fail.
+  return true;
 }
 
 export const authApi = {
@@ -53,20 +69,19 @@ export const authApi = {
       return authApi.jwtLogin(username, password);
     }
 
-    const res = await fetch(getApiUrl("/auth/login"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username, password }),
-    });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      throw new Error(
-        typeof err.detail === "string" ? err.detail : "Login failed",
-      );
+    try {
+      const res = await fetch(getApiUrl("/auth/login"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (res.ok) {
+        const data = (await res.json()) as LoginResponse;
+        if (data.token) return data;
+      }
+    } catch {
+      /* fall through to JWT */
     }
-    const data = (await res.json()) as LoginResponse;
-    // 远端 JWT 部署上 /auth/login 可能返回空 token，自动改走 jwt/login
-    if (data.token) return data;
     return authApi.jwtLogin(username, password);
   },
 

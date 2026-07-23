@@ -4,7 +4,7 @@ description: "CLI to manage emails via IMAP/SMTP. Use `himalaya` to list, read, 
 homepage: https://github.com/pimalaya/himalaya
 metadata:
   builtin_skill_version: "1.3"
-  aiwork:
+  qwenpaw:
     emoji: "📧"
     requires:
       bins:

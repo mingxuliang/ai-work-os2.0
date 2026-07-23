@@ -1,12 +1,20 @@
 # -*- coding: utf-8 -*-
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, List, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request
+from fastapi import (
+    APIRouter,
+    Body,
+    Depends,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+)
 from pydantic import BaseModel, Field
 
-from ..routers.agents import _get_jwt_user_id
 from ..utils import schedule_agent_reload
 from ...config import (
     load_config,
@@ -17,7 +25,6 @@ from ...config import (
     ToolGuardConfig,
     ToolGuardRuleConfig,
 )
-from ...config.config import load_user_channels, save_user_channels
 from ..channels.registry import BUILTIN_CHANNEL_KEYS
 from ...config.timezone import normalize_tz
 from ...config.config import (
@@ -25,7 +32,6 @@ from ...config.config import (
     ConsoleConfig,
     DingTalkConfig,
     DiscordConfig,
-    ExecutionSandboxConfig,
     FeishuConfig,
     HeartbeatConfig,
     IMessageChannelConfig,
@@ -41,6 +47,11 @@ from ...config.config import (
     WecomConfig,
 )
 from ...agents.acp.core import ACPConfig, ACPAgentConfig
+from ...agents.acp.node_runtime import (
+    ACPNodeRuntimeStatus,
+    get_node_runtime_status,
+    resolve_node_runtime,
+)
 
 from .schemas_config import (
     ChannelHealthResponse,
@@ -77,57 +88,8 @@ _ALLOWED_ACP_TOOL_PARSE_MODES = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Per-user channel config helpers
-# ---------------------------------------------------------------------------
-
-
-async def _resolve_user_channels(
-    request: Request,
-) -> tuple[ChannelConfig | None, str | None, object]:
-    """Resolve per-user channel config and workspace.
-
-    On first access, clones the agent-level channel config into the
-    per-user file so that every authenticated user starts with their
-    own copy.  Subsequent reads/writes go through the per-user file.
-
-    Returns:
-        (channels_config, user_id, workspace) tuple.
-        channels_config is always from the per-user file when JWT auth
-        is active.  Falls back to agent config only when unauthenticated.
-        user_id is the JWT user ID (None if not authenticated).
-    """
-    from ..agent_context import get_agent_for_request
-
-    workspace = await get_agent_for_request(request)
-    user_id = await _get_jwt_user_id(request)
-
-    # Try per-user file first
-    user_channels = load_user_channels(
-        workspace.workspace_dir, user_id,
-    )
-    if user_channels is not None:
-        return user_channels, user_id, workspace
-
-    # First access: clone agent-level config into per-user file
-    agent_config = workspace.config
-    template = agent_config.channels
-    if template is not None:
-        user_channels = template.model_copy(deep=True)
-        save_user_channels(workspace.workspace_dir, user_id, user_channels)
-        return user_channels, user_id, workspace
-
-    # No channels configured at all
-    return None, user_id, workspace
-
-
-async def _save_user_channels(
-    workspace,
-    user_id: str,
-    channels: ChannelConfig,
-) -> None:
-    """Save channel config to per-user file."""
-    save_user_channels(workspace.workspace_dir, user_id, channels)
+class ACPNodeRuntimeUpdate(BaseModel):
+    node_path: str = ""
 
 
 @router.get(
@@ -136,16 +98,17 @@ async def _save_user_channels(
     description="Retrieve configuration for all available channels",
 )
 async def list_channels(request: Request) -> dict:
-    """List all channel configs (filtered by available channels).
+    """List all channel configs (filtered by available channels)."""
+    from ..agent_context import get_agent_for_request
 
-    Reads from per-user channels.json when JWT auth is active,
-    falling back to agent-level config.
-    """
-    channels_config, user_id, workspace = await _resolve_user_channels(request)
+    agent = await get_agent_for_request(request)
+    agent_config = agent.config
     available = get_available_channels()
 
-    # Get channel configs (with fallback to empty)
+    # Get channel configs from agent's config (with fallback to empty)
+    channels_config = agent_config.channels
     if channels_config is None:
+        # No channels config yet, use empty defaults
         all_configs = {}
     else:
         all_configs = channels_config.model_dump()
@@ -181,6 +144,32 @@ async def list_channel_types() -> List[str]:
     return list(get_available_channels())
 
 
+@router.get(
+    "/channels/schemas",
+    summary="Get plugin channel config schemas",
+    description=(
+        "Return config_fields metadata for plugin-registered channels "
+        "so the frontend can render dynamic forms."
+    ),
+)
+async def list_channel_schemas() -> dict:
+    """Return plugin channel schemas for frontend form rendering."""
+    from ...plugins.registry import PluginRegistry
+
+    registry = PluginRegistry()
+    result: dict = {}
+    for key, reg in registry.get_registered_channels().items():
+        result[key] = {
+            "label": reg.label,
+            "description": reg.description,
+            "plugin_id": reg.plugin_id,
+            "config_fields": reg.config_fields,
+            "icon": reg.icon,
+            "doc_url": reg.doc_url,
+        }
+    return result
+
+
 @router.put(
     "/channels",
     response_model=ChannelConfig,
@@ -194,38 +183,16 @@ async def put_channels(
         description="Complete channel configuration",
     ),
 ) -> ChannelConfig:
-    """Update all channel configs.
-
-    Writes to per-user channels.json when JWT auth is active,
-    falling back to agent.json for unauthenticated requests.
-    """
+    """Update all channel configs."""
     from ..agent_context import get_agent_for_request
+    from ...config.config import save_agent_config
 
-    workspace = await get_agent_for_request(request)
-    user_id = await _get_jwt_user_id(request)
+    agent = await get_agent_for_request(request)
+    agent.config.channels = channels_config
+    save_agent_config(agent.agent_id, agent.config)
 
-    await _save_user_channels(workspace, user_id, channels_config)
-
-    # Restart affected channels on the user's own ChannelManager.
-    cm = await workspace.get_channel_manager(user_id)
-    if cm is not None:
-        for ch_name in get_available_channels():
-            ch_cfg = getattr(channels_config, ch_name, None)
-            if ch_cfg is None:
-                extra = getattr(
-                    channels_config, "__pydantic_extra__", None,
-                ) or {}
-                ch_cfg = extra.get(ch_name)
-            if ch_cfg is None:
-                continue
-            try:
-                await cm.restart_channel(ch_name)
-            except Exception:
-                import logging
-                logging.getLogger(__name__).warning(
-                    "Failed to restart channel '%s' for user=%s",
-                    ch_name, user_id, exc_info=True,
-                )
+    # Hot reload config (async, non-blocking)
+    schedule_agent_reload(request, agent.agent_id)
 
     return channels_config
 
@@ -241,9 +208,7 @@ async def _resolve_channel_manager(
         min_length=1,
     ),
 ):
-    """Shared dependency: validate channel name and return the user's
-    per-user ChannelManager.
-    """
+    """Shared dependency: validate channel name and return channel_manager."""
     from ..agent_context import get_agent_for_request
 
     available = get_available_channels()
@@ -253,10 +218,8 @@ async def _resolve_channel_manager(
             detail=f"Channel '{channel_name}' not available",
         )
 
-    workspace = await get_agent_for_request(request)
-    user_id = await _get_jwt_user_id(request)
-    channel_manager = await workspace.get_channel_manager(user_id)
-
+    agent = await get_agent_for_request(request)
+    channel_manager = agent.channel_manager
     if channel_manager is None:
         raise HTTPException(
             status_code=503,
@@ -312,7 +275,9 @@ async def restart_channel(
 ) -> ChannelRestartResponse:
     """Restart a specific channel."""
     try:
-        return await channel_manager.restart_channel(channel_name)
+        return await channel_manager.restart_channel(
+            channel_name,
+        )
     except KeyError as exc:
         raise HTTPException(
             status_code=404,
@@ -388,10 +353,9 @@ async def get_channel(
         min_length=1,
     ),
 ) -> ChannelConfigUnion:
-    """Get a specific channel config by name.
+    """Get a specific channel config by name."""
+    from ..agent_context import get_agent_for_request
 
-    Reads from per-user channels.json when JWT auth is active.
-    """
     available = get_available_channels()
     if channel_name not in available:
         raise HTTPException(
@@ -399,7 +363,8 @@ async def get_channel(
             detail=f"Channel '{channel_name}' not found",
         )
 
-    channels, _user_id, _workspace = await _resolve_user_channels(request)
+    agent = await get_agent_for_request(request)
+    channels = agent.config.channels
     if channels is None:
         raise HTTPException(
             status_code=404,
@@ -436,11 +401,9 @@ async def put_channel(
         description="Updated channel configuration",
     ),
 ) -> ChannelConfigUnion:
-    """Update a specific channel config by name.
-
-    Writes to per-user channels.json when JWT auth is active.
-    """
+    """Update a specific channel config by name."""
     from ..agent_context import get_agent_for_request
+    from ...config.config import save_agent_config
 
     available = get_available_channels()
     if channel_name not in available:
@@ -449,44 +412,25 @@ async def put_channel(
             detail=f"Channel '{channel_name}' not found",
         )
 
-    workspace = await get_agent_for_request(request)
-    user_id = await _get_jwt_user_id(request)
+    agent = await get_agent_for_request(request)
 
-    # Load existing channels (per-user or agent-level)
-    channels, user_id, workspace = await _resolve_user_channels(request)
-    if channels is None:
-        channels = ChannelConfig()
+    # Initialize channels if not exists
+    if agent.config.channels is None:
+        agent.config.channels = ChannelConfig()
 
     config_class = _CHANNEL_CONFIG_CLASS_MAP.get(channel_name)
     if config_class is not None:
-        # Strip empty-string values so Pydantic falls back to field defaults
-        # (frontend may send "" for unset Literal / list fields).
-        cleaned = {
-            k: v
-            for k, v in single_channel_config.items()
-            if not (isinstance(v, str) and v == "")
-        }
-        channel_config = config_class(**cleaned)
+        channel_config = config_class(**single_channel_config)
     else:
+        # For custom channels, just use the dict
         channel_config = single_channel_config
 
-    # Set channel config
-    setattr(channels, channel_name, channel_config)
+    # Set channel config in agent's config
+    setattr(agent.config.channels, channel_name, channel_config)
+    save_agent_config(agent.agent_id, agent.config)
 
-    # Save to per-user file
-    await _save_user_channels(workspace, user_id, channels)
-
-    # Restart the channel on the user's own ChannelManager.
-    cm = await workspace.get_channel_manager(user_id)
-    if cm is not None:
-        try:
-            await cm.restart_channel(channel_name)
-        except Exception:
-            import logging
-            logging.getLogger(__name__).warning(
-                "Failed to restart channel '%s' for user=%s",
-                channel_name, user_id, exc_info=True,
-            )
+    # Hot reload config (async, non-blocking)
+    schedule_agent_reload(request, agent.agent_id)
 
     return channel_config
 
@@ -527,6 +471,49 @@ async def put_acp_config(
     save_agent_config(agent.agent_id, agent.config)
     schedule_agent_reload(request, agent.agent_id)
     return agent.config.acp
+
+
+@router.get(
+    "/acp/node-runtime",
+    response_model=ACPNodeRuntimeStatus,
+    summary="Get ACP Node runtime",
+    description="Return configured and detected Node runtimes for ACP",
+)
+async def get_acp_node_runtime() -> ACPNodeRuntimeStatus:
+    """Return global ACP Node runtime status."""
+    node_path = load_config().acp.node_path
+    return await asyncio.to_thread(get_node_runtime_status, node_path)
+
+
+@router.put(
+    "/acp/node-runtime",
+    response_model=ACPNodeRuntimeStatus,
+    summary="Update ACP Node runtime",
+    description="Update the global Node runtime used by ACP subprocesses",
+)
+async def put_acp_node_runtime(
+    body: ACPNodeRuntimeUpdate = Body(...),
+) -> ACPNodeRuntimeStatus:
+    """Update global ACP Node runtime path."""
+    node_path = body.node_path.strip()
+    if node_path:
+        candidate = await asyncio.to_thread(resolve_node_runtime, node_path)
+        if not candidate.available:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "reason_code": candidate.reason_code,
+                    "reason": candidate.reason,
+                },
+            )
+
+    config = load_config()
+    config.acp.node_path = node_path
+    save_config(config)
+    return await asyncio.to_thread(
+        get_node_runtime_status,
+        config.acp.node_path,
+    )
 
 
 @router.get(
@@ -641,14 +628,13 @@ async def put_heartbeat(
         enabled=body.enabled,
         every=body.every,
         target=body.target,
+        timeout_seconds=body.timeout_seconds,
         active_hours=body.active_hours,
     )
     agent.config.heartbeat = hb
     save_agent_config(agent.agent_id, agent.config)
 
     # Reschedule heartbeat (async, non-blocking)
-    import asyncio
-
     async def reschedule_in_background():
         try:
             if agent.cron_manager is not None:
@@ -663,6 +649,37 @@ async def put_heartbeat(
     asyncio.create_task(reschedule_in_background())
 
     return hb.model_dump(mode="json", by_alias=True)
+
+
+@router.post(
+    "/heartbeat/run",
+    summary="Run heartbeat now",
+    description="Trigger one heartbeat execution immediately",
+)
+async def run_heartbeat_now(request: Request) -> Any:
+    """Trigger one heartbeat run in background for quick testing."""
+    from ..agent_context import get_agent_for_request
+    from ..crons.heartbeat import run_heartbeat_once
+    import logging
+
+    workspace = await get_agent_for_request(request)
+
+    async def _run_once_bg() -> None:
+        try:
+            await run_heartbeat_once(
+                workspace=workspace,
+                channel_manager=workspace.channel_manager,
+                agent_id=workspace.agent_id,
+                workspace_dir=workspace.workspace_dir,
+            )
+        except Exception as e:  # pylint: disable=broad-except
+            logging.getLogger(__name__).exception(
+                "manual heartbeat run failed: %s",
+                e,
+            )
+
+    asyncio.create_task(_run_once_bg())
+    return {"started": True}
 
 
 @router.get(
@@ -786,17 +803,169 @@ async def get_builtin_rules() -> List[ToolGuardRuleConfig]:
     ]
 
 
+# ── Security / Sandbox ───────────────────────────────────────────────
+
+
+class SandboxSettingBody(BaseModel):
+    """Global governance sandbox switch (``security.sandbox_enabled``)."""
+
+    enabled: bool = Field(
+        default=False,
+        description=(
+            "When True, shell tools with no matching rule run inside the "
+            "sandbox without prompting. When False (default), such calls "
+            "run directly without the sandbox (no prompt)."
+        ),
+    )
+
+
+class SandboxStatusResponse(BaseModel):
+    """Sandbox config + runtime effective status."""
+
+    enabled: bool = Field(
+        description="The configured value of security.sandbox_enabled.",
+    )
+    effective: bool = Field(
+        description=(
+            "Whether the sandbox is actually active this session. "
+            "May be False even when enabled=True (e.g. non-admin on Windows)."
+        ),
+    )
+    reason: Optional[str] = Field(
+        default=None,
+        description=(
+            "When effective != enabled, explains why. "
+            "None when effective == enabled."
+        ),
+    )
+
+
+async def _sandbox_effective_status(
+    enabled: bool,
+) -> tuple[bool, Optional[str]]:
+    """Return (effective, reason) for the sandbox setting.
+
+    Checks both platform-level permissions (admin on Windows) and
+    actual sandbox capability availability.
+
+    The capability probe runs in a thread-pool worker via
+    ``asyncio.to_thread`` so that the (potentially blocking) first
+    call never stalls the async event loop.  Subsequent calls hit
+    the ``lru_cache`` and return instantly.
+    """
+    if not enabled:
+        return False, None
+
+    # Check platform-level permissions
+    from ...utils.platform import is_windows_admin
+
+    if not is_windows_admin():
+        return False, "not_admin"
+
+    # Check if sandbox backend is actually available on this platform.
+    # probe_sandbox_support() is lru_cache'd; the first call may block
+    # (subprocess.run on Linux), so we offload it to a thread.
+    from ...sandbox import probe_sandbox_support
+
+    capability = await asyncio.to_thread(probe_sandbox_support)
+    if not capability.supported:
+        return False, "unsupported"
+
+    return True, None
+
+
+@router.get(
+    "/security/sandbox",
+    response_model=SandboxStatusResponse,
+    summary="Get global sandbox switch",
+)
+async def get_sandbox_setting(
+    enabled: Optional[bool] = Query(
+        default=None,
+        description=(
+            "If provided, compute effective/reason for this proposed value "
+            "without persisting it. Useful for the frontend to preview the "
+            "runtime status before saving."
+        ),
+    ),
+) -> SandboxStatusResponse:
+    config = load_config()
+    current_enabled = config.security.sandbox_enabled
+    # Use the proposed value if provided, otherwise the current config value.
+    target_enabled = enabled if enabled is not None else current_enabled
+    effective, reason = await _sandbox_effective_status(target_enabled)
+    return SandboxStatusResponse(
+        enabled=target_enabled,
+        effective=effective,
+        reason=reason,
+    )
+
+
+@router.put(
+    "/security/sandbox",
+    response_model=SandboxStatusResponse,
+    summary="Update global sandbox switch",
+)
+async def put_sandbox_setting(
+    body: SandboxSettingBody = Body(...),
+) -> SandboxStatusResponse:
+    config = load_config()
+    current_enabled = config.security.sandbox_enabled
+
+    # Idempotent: if the value hasn't changed, return current status
+    # without triggering the admin guard. This prevents partial-save
+    # issues when the frontend saves other security settings alongside
+    # an unchanged sandbox value.
+    if body.enabled == current_enabled:
+        effective, reason = await _sandbox_effective_status(body.enabled)
+        return SandboxStatusResponse(
+            enabled=body.enabled,
+            effective=effective,
+            reason=reason,
+        )
+
+    # Guard: enabling sandbox on Windows requires admin privileges.
+    # Refuse early with a clear, actionable message rather than letting
+    # the user flip the switch and hit cryptic ACL failures later.
+    from ...utils.platform import is_windows_admin
+
+    if body.enabled and not is_windows_admin():
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Sandbox requires administrator privileges on Windows.\n\n"
+                "To enable the sandbox, restart QwenPaw with administrator "
+                "privileges:\n"
+                "  - Desktop: right-click the shortcut "
+                "\u2192 Run as administrator\n"
+                "  - CLI: open an elevated terminal, then run `qwenpaw app`\n"
+                "Then come back to Settings and re-enable the sandbox."
+            ),
+        )
+
+    config.security.sandbox_enabled = body.enabled
+    save_config(config)
+    effective, reason = await _sandbox_effective_status(body.enabled)
+    return SandboxStatusResponse(
+        enabled=body.enabled,
+        effective=effective,
+        reason=reason,
+    )
+
+
 # ── Security / File Guard ────────────────────────────────────────────
 
 
 class FileGuardResponse(BaseModel):
     enabled: bool = True
     paths: List[str] = []
+    allow_preview_outside_workspace: bool = False
 
 
 class FileGuardUpdateBody(BaseModel):
     enabled: Optional[bool] = None
     paths: Optional[List[str]] = None
+    allow_preview_outside_workspace: Optional[bool] = None
 
 
 @router.get(
@@ -812,7 +981,11 @@ async def get_file_guard() -> FileGuardResponse:
     )
 
     paths = ensure_file_guard_paths(fg.sensitive_files or [])
-    return FileGuardResponse(enabled=fg.enabled, paths=paths)
+    return FileGuardResponse(
+        enabled=fg.enabled,
+        paths=paths,
+        allow_preview_outside_workspace=fg.allow_preview_outside_workspace,
+    )
 
 
 @router.put(
@@ -834,6 +1007,10 @@ async def put_file_guard(
         )
 
         fg.sensitive_files = ensure_file_guard_paths(body.paths)
+    if body.allow_preview_outside_workspace is not None:
+        fg.allow_preview_outside_workspace = (
+            body.allow_preview_outside_workspace
+        )
 
     save_config(config)
 
@@ -845,81 +1022,8 @@ async def put_file_guard(
     return FileGuardResponse(
         enabled=fg.enabled,
         paths=fg.sensitive_files,
+        allow_preview_outside_workspace=fg.allow_preview_outside_workspace,
     )
-
-
-# ── Security / Execution Sandbox ─────────────────────────────────────
-
-
-class ExecutionSandboxStatusResponse(BaseModel):
-    effective_enabled: bool
-    effective_backend: str
-    docker_available: bool
-    docker_image_present: bool
-    docker_image: str
-    env_enabled: Optional[str] = None
-    env_backend: Optional[str] = None
-    session_containers: dict
-
-
-@router.get(
-    "/security/execution-sandbox",
-    response_model=ExecutionSandboxConfig,
-    summary="Get execution sandbox settings",
-)
-async def get_execution_sandbox() -> ExecutionSandboxConfig:
-    config = load_config()
-    return config.security.execution_sandbox
-
-
-@router.put(
-    "/security/execution-sandbox",
-    response_model=ExecutionSandboxConfig,
-    summary="Update execution sandbox settings",
-)
-async def put_execution_sandbox(
-    body: ExecutionSandboxConfig = Body(...),
-) -> ExecutionSandboxConfig:
-    if body.enabled and body.backend == "off":
-        raise HTTPException(
-            status_code=400,
-            detail="backend cannot be 'off' when execution sandbox is enabled",
-        )
-    config = load_config()
-    config.security.execution_sandbox = body
-    save_config(config)
-    return body
-
-
-@router.get(
-    "/security/execution-sandbox/status",
-    response_model=ExecutionSandboxStatusResponse,
-    summary="Get execution sandbox runtime status",
-)
-async def get_execution_sandbox_status() -> ExecutionSandboxStatusResponse:
-    from ...security.sandbox.status import get_execution_sandbox_status
-
-    status = await get_execution_sandbox_status()
-    payload = status.to_dict()
-    return ExecutionSandboxStatusResponse(**payload)
-
-
-@router.delete(
-    "/security/execution-sandbox/session-containers/{session_key:path}",
-    summary="Destroy one session container",
-)
-async def destroy_session_container(session_key: str) -> dict[str, bool]:
-    from ...security.sandbox.session_container_manager import (
-        get_session_container_manager,
-    )
-
-    destroyed = await get_session_container_manager().destroy(session_key)
-    if not destroyed:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Session container not found: {session_key}",
-        )
-    return {"destroyed": True}
 
 
 # ── Security / Skill Scanner ────────────────────────────────────────

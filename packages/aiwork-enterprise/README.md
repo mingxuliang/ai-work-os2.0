@@ -1,30 +1,12 @@
-# aiwork-enterprise
+# -*- coding: utf-8 -*-
+"""DEPRECATED overlay package.
 
-Enterprise overlay that mounts AIWork-OS self-developed capabilities onto the
-**QwenPaw 2.0** kernel while keeping the **AIWork Console UI**.
-
-## Install
-
-```bash
-pip install -e ./packages/aiwork-enterprise
-pip install -e ".[qw2]"   # from repo root
-```
-
-## Run
+AIWork-OS now vendors QwenPaw 2.0 **in-tree** under ``src/aiwork``
+(1.x fork morphology). Do not use this package for new deployments.
 
 ```bash
-export AIWORK_KERNEL=qwenpaw2
-export AIWORK_WORKING_DIR=~/.aiwork
-export QWENPAW_WORKING_DIR=~/.aiwork
+pip install -e .
 aiwork app
-# or: aiwork-qw2 app
+aiwork enterprise-doctor --governance-test
 ```
-
-## What it mounts
-
-- JWT / RBAC middleware + `/api/auth/jwt/*`
-- Security response headers
-- MySQL chat repository patch (optional `AIWORK_CHAT_MYSQL=1`)
-- Token usage, departments, MinIO file/llm/presale, RAG routers
-- Governance enterprise seed (`cache/`, `skills/`, `media/`)
-- Console static bridge → AIWork `console/dist`
+"""

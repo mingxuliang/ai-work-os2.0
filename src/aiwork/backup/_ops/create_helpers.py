@@ -46,12 +46,33 @@ def add_agent_workspaces(
         ws = Path(ref.workspace_dir).expanduser().resolve()
         if ws.is_dir():
             file_count = 0
+            skipped = 0
             for entry in sorted(ws.rglob("*")):
-                if entry.is_file():
-                    rel = entry.relative_to(ws).as_posix()
-                    arcname = f"{PREFIX_WORKSPACES}{aid}/{rel}"
+                if not entry.is_file():
+                    continue
+                rel = entry.relative_to(ws).as_posix()
+                arcname = f"{PREFIX_WORKSPACES}{aid}/{rel}"
+                try:
                     zf.write(entry, arcname)
-                    file_count += 1
+                except (PermissionError, OSError) as exc:
+                    # A file that can't be added (e.g. an open Chromium
+                    # cache file the backend has locked) must not abort
+                    # the whole backup; skip it and continue (#4916).
+                    skipped += 1
+                    logger.warning(
+                        "Skipping %s (could not be added to backup): %s",
+                        entry,
+                        exc,
+                    )
+                    continue
+                file_count += 1
+            if skipped:
+                logger.warning(
+                    "Agent '%s': skipped %d file(s) that could not be "
+                    "added to the backup",
+                    aid,
+                    skipped,
+                )
             logger.debug(
                 "Agent '%s': %d file(s) added from %s",
                 aid,
@@ -114,7 +135,7 @@ def add_skill_pool(zf: zipfile.ZipFile, stop_event=None) -> bool:
     Returns ``False`` if *stop_event* was set before or during the operation
     (cancelled), ``True`` otherwise.
     """
-    from ...agents.skills_manager import get_skill_pool_dir
+    from ...agents.skill_system.store import get_skill_pool_dir
 
     skill_pool_dir = get_skill_pool_dir()
     if not skill_pool_dir.is_dir():

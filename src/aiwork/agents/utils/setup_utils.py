@@ -14,14 +14,9 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_OVERRIDE_FILENAMES = {
     "AGENTS.md",
-    "SOUL.md",
-}
-
-# Files that are per-user isolated — never copied to shared workspace root.
-# They are initialised in users/{user_id}/ on first access instead.
-_USER_ISOLATED_FILENAMES = {
-    "MEMORY.md",
+    "BOOTSTRAP.md",
     "PROFILE.md",
+    "SOUL.md",
 }
 
 
@@ -41,7 +36,7 @@ def copy_md_files(
     """Copy md files from agents/md_files to working directory.
 
     Args:
-        language: Language code (e.g. 'en', 'zh')
+        language: Supported agent language code.
         skip_existing: If True, skip files that already exist in working dir.
         workspace_dir: Target workspace directory. If None, uses WORKING_DIR.
         exclude_filenames: File names to skip while copying.
@@ -75,12 +70,6 @@ def copy_md_files(
     copied_files: list[str] = []
     for md_file in md_files_dir.glob("*.md"):
         if exclude_filenames and md_file.name in exclude_filenames:
-            continue
-        if md_file.name in _USER_ISOLATED_FILENAMES:
-            logger.debug(
-                "Skipped user-isolated file: %s (initialised per-user)",
-                md_file.name,
-            )
             continue
         target_file = target_dir / md_file.name
         if skip_existing and target_file.exists():
@@ -177,6 +166,20 @@ def _copy_template_md_files(
     return copied
 
 
+def _remove_bootstrap_from_workspace(workspace_dir: Path) -> None:
+    bootstrap = workspace_dir / "BOOTSTRAP.md"
+    if not bootstrap.exists():
+        return
+    try:
+        bootstrap.unlink()
+        logger.info(
+            "Removed BOOTSTRAP.md from builtin QA workspace %s",
+            workspace_dir,
+        )
+    except OSError as e:
+        logger.warning("Could not remove BOOTSTRAP.md: %s", e)
+
+
 def copy_template_md_files(
     template_id: str,
     language: str,
@@ -187,11 +190,12 @@ def copy_template_md_files(
     """Copy template-specific markdown files into an agent workspace.
 
     Files are read from ``md_files/<template_id>/<language>/`` with fallback
-    order ``language`` → ``en`` → ``zh`` → ``ru`` on a per-file basis.
+    order ``language`` then the built-in fallback languages on a
+    per-file basis.
 
     Args:
         template_id: Template directory name under ``agents/md_files``.
-        language: Language code (en/zh/ru).
+        language: Supported agent language code.
         workspace_dir: Agent workspace root.
         only_if_missing: If True, skip targets that already exist.
 
@@ -216,6 +220,7 @@ def copy_template_md_files(
         workspace_dir,
         only_if_missing,
     )
+    _remove_bootstrap_from_workspace(workspace_dir)
     return copied_files
 
 

@@ -3,6 +3,8 @@
 """CLI init: interactively create working_dir config.json and HEARTBEAT.md."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -30,16 +32,16 @@ from ..constant import WORKING_DIR
 SECURITY_WARNING = """
 Security warning — please read.
 
-AiWork is a personal assistant that runs in your own environment. It can connect to
+QwenPaw is a personal assistant that runs in your own environment. It can connect to
 channels (DingTalk, Feishu, QQ, Discord, iMessage, etc.) and run skills that read
 files, run commands, and call external APIs. By default it is a single-operator
 boundary: one trusted user. A malicious or confused prompt can lead the agent to
 do unsafe things if tools are enabled.
 
-If multiple people can message the same AiWork instance with tools enabled, they
+If multiple people can message the same QwenPaw instance with tools enabled, they
 share the same delegated authority (files, commands, secrets the agent can use).
 
-If you are not comfortable with access control and hardening, do not run AiWork with
+If you are not comfortable with access control and hardening, do not run QwenPaw with
 tools or expose it to untrusted users. Get help from someone experienced before
 enabling powerful skills or exposing the bot to the internet.
 
@@ -55,10 +57,10 @@ Review your config and skills regularly; limit tool scope to what you need.
 """
 
 TELEMETRY_INFO = """
-Help improve AiWork by sharing anonymous usage data!
+Help improve QwenPaw by sharing anonymous usage data!
 
 We collect only:
-• AiWork version (e.g., 0.0.7)
+• QwenPaw version (e.g., 0.0.7)
 • Install method (pip, Docker, or desktop app)
 • OS and version (e.g., macOS 14.0, Ubuntu 22.04)
 • Python version (e.g., 3.11)
@@ -66,7 +68,7 @@ We collect only:
 • GPU availability (detected, not detailed specs)
 
 No personal data collected! No files, no credentials, no identifiable information.
-This helps us understand AiWork's usage environment and prioritize improvements.
+This helps us understand QwenPaw's usage environment and prioritize improvements.
 """
 
 
@@ -88,69 +90,10 @@ def _echo_telemetry_info_box() -> None:
     console.print(
         Panel(
             TELEMETRY_INFO.strip(),
-            title="[bold]📊 Help improve AiWork[/bold]",
+            title="[bold]📊 Help improve QwenPaw[/bold]",
             border_style="blue",
         ),
     )
-
-
-def _run_db_migration_idempotent() -> None:
-    """Locate and run scripts/db_migrate.py once (idempotent).
-
-    Used by ``aiwork init --defaults`` to make sure the JWT auth database,
-    tables and seed data (default roles/permissions + admin user) exist.
-
-    幂等保证由 ``scripts/db_migrate.py`` 本身提供：建库/建表使用
-    IF NOT EXISTS 语义，seed 部分均先 SELECT 再 INSERT，重复调用无副作用。
-
-    任何异常（未配置连接串 / 数据库不可达等）都仅印警告，不会
-    中断 init 流程。
-    """
-    import asyncio
-    import importlib.util
-    from pathlib import Path
-
-    # 1. 定位 scripts/db_migrate.py：兼容开发、Docker(/app)、当前工作目录。
-    here = Path(__file__).resolve()
-    candidates: list[Path] = []
-    if len(here.parents) >= 4:
-        # 开发布局: <project_root>/src/aiwork/cli/init_cmd.py
-        candidates.append(here.parents[3] / "scripts" / "db_migrate.py")
-    candidates.append(Path.cwd() / "scripts" / "db_migrate.py")
-    candidates.append(Path("/app/scripts/db_migrate.py"))
-
-    script_path = next((p for p in candidates if p.is_file()), None)
-    if script_path is None:
-        click.echo(
-            "⚠ scripts/db_migrate.py not found; skipping DB migration. "
-            "Run it manually after deploy if JWT auth is enabled.",
-        )
-        return
-
-    # 2. 动态加载该脚本为一个子模块（scripts/ 默认不在 sys.path）。
-    spec = importlib.util.spec_from_file_location(
-        "_aiwork_db_migrate", script_path,
-    )
-    if spec is None or spec.loader is None:
-        click.echo("⚠ Failed to load db_migrate.py; skipping DB migration.")
-        return
-    module = importlib.util.module_from_spec(spec)
-    try:
-        spec.loader.exec_module(module)
-    except Exception as exc:  # pylint: disable=broad-except
-        click.echo(f"⚠ Failed to import db_migrate.py: {exc}")
-        return
-
-    # 3. 调用迁移（幂等）。其他异常不可中断 init。
-    click.echo(f"\n=== Database Migration ({script_path}) ===")
-    try:
-        asyncio.run(module.run_migration(drop=False, seed_only=False))
-        click.echo("✓ Database migration complete (idempotent).")
-    except RuntimeError as exc:
-        # 例如 .env 中未配置 AIWORK_JWT_DB_URL
-        click.echo(f"⚠ Database migration skipped: {exc}")
-    except Exception as exc:  # pylint: disable=broad-except
-        click.echo(f"⚠ Database migration failed (non-fatal): {exc}")
 
 
 DEFAULT_HEARTBEAT_MDS = {
@@ -173,6 +116,37 @@ DEFAULT_HEARTBEAT_MDS = {
 - Лёгкая проверка при отсутствии активности более 8 часов
 """,
 }
+
+
+def _sync_default_workspace_skills(
+    default_workspace: Path,
+    *,
+    enable_all: bool = False,
+) -> int:
+    """Download pool skills into the default workspace and enable some of them.
+
+    Returns the number of skills enabled.
+    """
+    from ..agents.skill_system import SkillPoolService, SkillService
+
+    pool = SkillPoolService()
+    service = SkillService(default_workspace)
+    prior_names = {skill.name for skill in service.list_all_skills()}
+    for skill in pool.list_all_skills():
+        pool.download_to_workspace(
+            skill.name,
+            default_workspace,
+            overwrite=False,
+        )
+    enabled = 0
+    for skill in service.list_all_skills():
+        if not enable_all and skill.name in prior_names:
+            # Preserve the user's existing enable/disable choice.
+            continue
+        result = service.enable_skill(skill.name)
+        if result.get("success"):
+            enabled += 1
+    return enabled
 
 
 @click.command("init")
@@ -200,7 +174,6 @@ def init_cmd(
     accept_security: bool,
 ) -> None:
     """Create working dir with config.json and HEARTBEAT.md (interactive)."""
-    from pathlib import Path
     from ..app.migration import (
         ensure_default_agent_exists,
         ensure_qa_agent_exists,
@@ -259,13 +232,11 @@ def init_cmd(
     ensure_default_agent_exists()
     migrate_legacy_skills_to_skill_pool()
     click.echo("✓ Default workspace initialized")
-    
-    # [20260519]隐藏qa_agent
-    # ensure_qa_agent_exists()
-    # click.echo("✓ Builtin QA agent workspace ensured")
+    ensure_qa_agent_exists()
+    click.echo("✓ Builtin QA agent workspace ensured")
 
     # --- Ensure local skill hub exists ---
-    from ..agents.skills_manager import ensure_skill_pool_initialized
+    from ..agents.skill_system import ensure_skill_pool_initialized
 
     if ensure_skill_pool_initialized():
         click.echo("✓ Skill pool initialized")
@@ -339,13 +310,12 @@ def init_cmd(
         existing.agents.defaults.heartbeat = hb
 
         # --- show_tool_details ---
-        # 关闭工具调用明细
         if use_defaults:
-            existing.show_tool_details = False
+            existing.show_tool_details = True
         else:
             existing.show_tool_details = prompt_confirm(
                 "Show tool call/result details in channel messages?",
-                default=False,
+                default=True,
             )
 
         # --- language selection ---
@@ -422,28 +392,18 @@ def init_cmd(
 
     # --- skills (prompt if needed) ---
     if use_defaults:
-        # Using --defaults: download all pool skills into workspace, then enable
-        from ..agents.skills_manager import (
-            SkillPoolService,
-            SkillService,
-        )
-
-        pool = SkillPoolService()
-        service = SkillService(default_workspace)
-        click.echo("Downloading pool skills into workspace...")
-        for skill in pool.list_all_skills():
-            pool.download_to_workspace(
-                skill.name,
-                default_workspace,
-                overwrite=False,
+        # Using --defaults: download all pool skills into workspace; enable only
+        # newly-added skills so re-running init never re-enables ones the user
+        # has disabled.
+        click.echo("Syncing pool skills into workspace...")
+        synced = _sync_default_workspace_skills(default_workspace)
+        if synced:
+            click.echo(f"✓ {synced} new skill(s) enabled.")
+        else:
+            click.echo(
+                "✓ Skills already up to date "
+                "(kept your enable/disable choices).",
             )
-        click.echo("Enabling all skills by default...")
-        synced = 0
-        for skill in service.list_all_skills():
-            result = service.enable_skill(skill.name)
-            if result.get("success"):
-                synced += 1
-        click.echo(f"✓ All {synced} skills enabled.")
     elif write_config:
         # Interactive mode and config was written: prompt user
         skills_choice = prompt_choice(
@@ -453,27 +413,13 @@ def init_cmd(
         )
 
         if skills_choice == "all":
-            from ..agents.skills_manager import (
-                SkillPoolService,
-                SkillService,
+            # Explicit "all": honor it and enable every skill.
+            click.echo("Syncing pool skills into workspace...")
+            synced = _sync_default_workspace_skills(
+                default_workspace,
+                enable_all=True,
             )
-
-            pool = SkillPoolService()
-            service = SkillService(default_workspace)
-            click.echo("Downloading pool skills into workspace...")
-            for skill in pool.list_all_skills():
-                pool.download_to_workspace(
-                    skill.name,
-                    default_workspace,
-                    overwrite=False,
-                )
-            click.echo("Enabling all skills...")
-            synced = 0
-            for skill in service.list_all_skills():
-                result = service.enable_skill(skill.name)
-                if result.get("success"):
-                    synced += 1
-            click.echo(f"✓ Skills synced: {synced}")
+            click.echo(f"✓ {synced} skill(s) enabled.")
         elif skills_choice == "custom":
             configure_skills_interactive(
                 agent_id="default",
@@ -580,9 +526,5 @@ def init_cmd(
             encoding="utf-8",
         )
         click.echo(f"✓ Heartbeat query saved to {heartbeat_path}")
-
-    # --- DB migration (only in --defaults: 非交互脚本场景下自动初始化认证库) ---
-    if use_defaults:
-        _run_db_migration_idempotent()
 
     click.echo("\n✓ Initialization complete!")

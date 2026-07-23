@@ -9,63 +9,35 @@ from __future__ import annotations
 
 import asyncio
 import io
+import json
 import shutil
-import struct
+import stat
 import tempfile
+import os
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, Body, HTTPException, UploadFile, File, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import ORJSONResponse, Response, StreamingResponse
+from watchfiles import awatch, Change
 from pydantic import BaseModel, Field
 
-from ..utils import schedule_agent_reload
+from ..utils import check_upload_size, safe_join, schedule_agent_reload
 from ...config import (
     load_config,
     save_config,
     AgentsRunningConfig,
 )
 from ...config.config import load_agent_config, save_agent_config
-from ...agents.memory.reme_light.agent_md_manager import AgentMdManager
+from ...agents.memory.agent_md_manager import AgentMdManager
 from ...agents.templates import get_workspace_md_template_id
 from ...agents.utils import copy_workspace_md_files
 from ...constant import BUILTIN_QA_AGENT_ID, SUPPORTED_AGENT_LANGUAGES
-from ..agent_context import get_agent_for_request, get_current_user_id
+from ..agent_context import get_agent_for_request, get_coding_dir
 
 
 router = APIRouter(prefix="/workspace", tags=["workspace"])
-
-
-def _get_memory_working_dir(workspace) -> str:
-    """Resolve the working directory for memory operations.
-
-    For shared agents with a current user, returns the user's subdirectory.
-    Otherwise returns the workspace root.
-    """
-    user_id = get_current_user_id()
-    if user_id:
-        return str(workspace.get_user_working_dir(user_id))
-    return str(workspace.workspace_dir)
-
-
-def _get_working_dir_for_file(workspace, filename: str) -> str:
-    """Resolve the working directory based on filename.
-
-    For MEMORY.md files, returns user-specific directory (if user is authenticated).
-    For other files, returns the agent workspace root.
-    """
-
-    SHARED_FILENAMES = {
-        "AGENTS.MD",
-        "SOUL.MD",
-        "HEARTBEAT.MD"
-    }
-    if filename.upper() in SHARED_FILENAMES:
-        return str(workspace.workspace_dir)
-
-    return _get_memory_working_dir(workspace)
-
 
 
 class MdFileInfo(BaseModel):
@@ -131,9 +103,6 @@ async def list_working_files(
     """List working directory markdown files."""
     try:
         workspace = await get_agent_for_request(request)
-        user_id = get_current_user_id()
-
-        # Get files from agent workspace
         workspace_manager = AgentMdManager(
             str(workspace.workspace_dir),
             agent_id=workspace.agent_id,
@@ -141,22 +110,7 @@ async def list_working_files(
         files = [
             MdFileInfo.model_validate(file)
             for file in workspace_manager.list_working_mds()
-            if file["filename"].upper() not in ("MEMORY.MD", "PROFILE.MD")
         ]
-
-        # If user is authenticated, get user-isolated files from user workspace
-        if user_id:
-            user_working_dir = str(workspace.get_user_working_dir(user_id))
-            user_manager = AgentMdManager(
-                user_working_dir,
-                agent_id=workspace.agent_id,
-            )
-            user_files = [
-                MdFileInfo.model_validate(file)
-                for file in user_manager.list_working_mds()
-            ]
-            files.extend(user_files)
-
         return files
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -175,9 +129,8 @@ async def read_working_file(
     """Read a working directory markdown file."""
     try:
         workspace = await get_agent_for_request(request)
-        working_dir = _get_working_dir_for_file(workspace, md_name)
         workspace_manager = AgentMdManager(
-            working_dir,
+            str(workspace.workspace_dir),
             agent_id=workspace.agent_id,
         )
         content = workspace_manager.read_working_md(md_name)
@@ -202,15 +155,354 @@ async def write_working_file(
     """Write a working directory markdown file."""
     try:
         workspace = await get_agent_for_request(request)
-        working_dir = _get_working_dir_for_file(workspace, md_name)
         workspace_manager = AgentMdManager(
-            working_dir,
+            str(workspace.workspace_dir),
             agent_id=workspace.agent_id,
         )
         workspace_manager.write_working_md(md_name, body.content)
         return {"written": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Coding Mode – full file-tree + file watcher (SSE)
+# ---------------------------------------------------------------------------
+
+_SKIP_NAMES: frozenset[str] = frozenset(
+    {
+        ".git",
+        "__pycache__",
+        ".venv",
+        "node_modules",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".hypothesis",
+    },
+)
+
+
+def _should_skip(rel_parts: tuple[str, ...]) -> bool:
+    return any(p.startswith(".") or p in _SKIP_NAMES for p in rel_parts)
+
+
+def _is_skipped_name(name: str) -> bool:
+    return name.startswith(".") or name in _SKIP_NAMES
+
+
+def _list_all_files(workspace_dir: Path) -> list[dict]:
+    """Recursively list all non-hidden workspace files.
+
+    Uses ``os.walk(topdown=True)`` and prunes ``dirnames`` in place so that
+    we never descend into ``node_modules`` / ``.venv`` / ``.git`` etc. — the
+    previous ``Path.rglob('*')`` walked them fully and filtered after the
+    fact, which is the dominant cost on real projects. Each file is stat'd
+    exactly once. Paths are returned with POSIX ``/`` separators so the
+    frontend ``buildTree`` (which splits on ``/``) works on Windows too.
+    """
+    files: list[dict] = []
+    root = str(workspace_dir)
+    try:
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True):
+            # Prune in place — must mutate, not rebind, for os.walk to honor.
+            dirnames[:] = sorted(
+                d for d in dirnames if not _is_skipped_name(d)
+            )
+            rel_dir = os.path.relpath(dirpath, root)
+            for name in sorted(filenames):
+                if _is_skipped_name(name):
+                    continue
+                full = os.path.join(dirpath, name)
+                try:
+                    st = os.stat(full)
+                except OSError:
+                    continue
+                rel = (
+                    name
+                    if rel_dir == "."
+                    else f"{rel_dir}/{name}".replace(os.sep, "/")
+                )
+                files.append(
+                    {
+                        "filename": rel,
+                        "path": rel,
+                        "size": st.st_size,
+                        "modified_time": datetime.fromtimestamp(
+                            st.st_mtime,
+                            tz=timezone.utc,
+                        ).isoformat(),
+                    },
+                )
+    except Exception:
+        pass
+    return files
+
+
+@router.get(
+    "/code-files",
+    summary="List all workspace files (Coding Mode)",
+)
+async def list_code_files(request: Request) -> list[dict]:
+    """List every non-hidden file in the active coding project directory."""
+    workspace = await get_agent_for_request(request)
+    return await asyncio.get_event_loop().run_in_executor(
+        None,
+        _list_all_files,
+        get_coding_dir(workspace),
+    )
+
+
+_CODE_FILE_MAX_BYTES = 5 * 1024 * 1024  # 5 MB
+_BINARY_FILE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
+
+_MIME_MAP: dict[str, str] = {
+    # Images
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "svg": "image/svg+xml",
+    "ico": "image/x-icon",
+    "bmp": "image/bmp",
+    # Documents
+    "pdf": "application/pdf",
+    # Data
+    "csv": "text/csv",
+}
+
+
+@router.get(
+    "/binary-files/{file_path:path}",
+    summary="Serve a binary workspace file (images, PDFs) for preview",
+)
+async def read_binary_file(
+    file_path: str,
+    request: Request,
+) -> StreamingResponse:
+    """Return the raw bytes of *file_path* with the appropriate Content-Type.
+
+    Intended for the IDE preview panel (images, PDFs, CSV).
+    Rejects files that are not in ``_MIME_MAP`` or exceed 50 MB.
+    """
+    workspace = await get_agent_for_request(request)
+    target = safe_join(get_coding_dir(workspace), file_path)
+
+    ext = target.suffix.lstrip(".").lower()
+    mime = _MIME_MAP.get(ext)
+    if mime is None:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Preview not supported for .{ext} files",
+        )
+
+    try:
+        size = await asyncio.to_thread(lambda: target.stat().st_size)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    if size > _BINARY_FILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"File too large for preview ({size // 1024 // 1024} MB"
+                f" > {_BINARY_FILE_MAX_BYTES // 1024 // 1024} MB limit)"
+            ),
+        )
+
+    def _iter_chunks(chunk_size: int = 64 * 1024):
+        with open(target, "rb") as fh:
+            while True:
+                data = fh.read(chunk_size)
+                if not data:
+                    break
+                yield data
+
+    return StreamingResponse(
+        _iter_chunks(),
+        media_type=mime,
+        headers={"Content-Length": str(size)},
+    )
+
+
+def _file_etag(stat_result: os.stat_result) -> str:
+    """Build a weak ETag from mtime+size — cheap and good enough for IDE."""
+    return f'W/"{stat_result.st_mtime_ns}-{stat_result.st_size}"'
+
+
+@router.get(
+    "/code-files/{file_path:path}",
+    summary="Read any workspace file (Coding Mode)",
+)
+async def read_code_file(file_path: str, request: Request):
+    """Return the text content of *file_path* inside the workspace.
+
+    Adds a weak ETag (mtime_ns + size) so repeat opens of an unchanged file
+    short-circuit to ``304 Not Modified`` and skip the read entirely.
+    Returns HTTP 413 if the file exceeds ``_CODE_FILE_MAX_BYTES`` (5 MB) to
+    avoid flooding the browser with huge binary or log files.
+    """
+    workspace = await get_agent_for_request(request)
+    target = safe_join(get_coding_dir(workspace), file_path)
+
+    def _stat() -> os.stat_result:
+        return target.stat()
+
+    try:
+        st = await asyncio.to_thread(_stat)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="File not found") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not stat.S_ISREG(st.st_mode):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    etag = _file_etag(st)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers={"ETag": etag})
+
+    if st.st_size > _CODE_FILE_MAX_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                f"File too large to open in editor "
+                f"({st.st_size // 1024 // 1024} MB"
+                f" > {_CODE_FILE_MAX_BYTES // 1024 // 1024} MB limit)"
+            ),
+        )
+
+    def _read() -> str:
+        return target.read_text(encoding="utf-8", errors="replace")
+
+    try:
+        content = await asyncio.to_thread(_read)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return ORJSONResponse(
+        {"path": file_path, "content": content},
+        headers={"ETag": etag},
+    )
+
+
+@router.put(
+    "/code-files/{file_path:path}",
+    summary="Write any workspace file (Coding Mode)",
+)
+async def write_code_file(
+    file_path: str,
+    request: Request,
+    body: dict = Body(...),
+) -> dict:
+    """Overwrite *file_path* inside the workspace with the provided content.
+
+    Request body::
+
+        {"content": "<new file content>"}
+    """
+    workspace = await get_agent_for_request(request)
+    target = safe_join(get_coding_dir(workspace), file_path)
+    content = body.get("content", "")
+    if not isinstance(content, str):
+        raise HTTPException(status_code=422, detail="content must be a string")
+
+    def _write() -> int:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding="utf-8")
+        return target.stat().st_size
+
+    try:
+        size = await asyncio.to_thread(_write)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"path": file_path, "size": size}
+
+
+@router.get(
+    "/watch",
+    summary="SSE stream for workspace file changes (Coding Mode)",
+)
+async def watch_workspace_files(request: Request) -> StreamingResponse:
+    """Server-Sent Events that emit file-change notifications.
+
+    Each SSE payload has the form::
+
+        {"type": "file_change", "events": [{"change": "modified", "path": "..."}]}  # noqa: E501
+
+    A heartbeat comment (``": heartbeat"``) is sent every 30 s when idle.
+    """
+    workspace = await get_agent_for_request(request)
+    watch_dir = get_coding_dir(workspace)
+
+    async def event_generator():
+        yield 'data: {"type": "connected"}\n\n'
+        watcher = awatch(watch_dir)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    raw_changes = await asyncio.wait_for(
+                        watcher.__anext__(),
+                        timeout=30.0,
+                    )
+                except asyncio.TimeoutError:
+                    yield ": heartbeat\n\n"
+                    continue
+                except (
+                    StopAsyncIteration,
+                    asyncio.CancelledError,
+                    GeneratorExit,
+                ):
+                    # StopAsyncIteration  – watcher stopped naturally
+                    # CancelledError      – app shutdown cancelled the task
+                    # GeneratorExit       – streaming response closed
+                    break
+
+                events = []
+                for change_type, path in raw_changes:
+                    try:
+                        rel = Path(path).relative_to(watch_dir)
+                    except ValueError:
+                        continue
+                    if _should_skip(rel.parts):
+                        continue
+                    change_name = (
+                        "added"
+                        if change_type is Change.added
+                        else "deleted"
+                        if change_type is Change.deleted
+                        else "modified"
+                    )
+                    events.append(
+                        {"change": change_name, "path": rel.as_posix()},
+                    )
+
+                if events:
+                    payload = json.dumps(
+                        {"type": "file_change", "events": events},
+                        ensure_ascii=False,
+                    )
+                    yield f"data: {payload}\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass  # normal during app shutdown
+        finally:
+            try:
+                await watcher.aclose()
+            except Exception:
+                pass
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get(
@@ -226,36 +518,37 @@ async def list_memory_files(
     try:
         workspace = await get_agent_for_request(request)
         workspace_manager = AgentMdManager(
-            _get_memory_working_dir(workspace),
+            str(workspace.workspace_dir),
             agent_id=workspace.agent_id,
         )
-        files = [
-            MdFileInfo.model_validate(file)
-            for file in workspace_manager.list_memory_mds()
-        ]
+        raw_files = await asyncio.to_thread(workspace_manager.list_memory_mds)
+        files = [MdFileInfo.model_validate(file) for file in raw_files]
         return files
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get(
-    "/memory/{md_name}",
+    "/memory/{md_path:path}",
     response_model=MdFileContent,
     summary="Read a memory file",
     description="Read a memory markdown file (uses active agent)",
 )
 async def read_memory_file(
-    md_name: str,
+    md_path: str,
     request: Request,
 ) -> MdFileContent:
     """Read a memory directory markdown file."""
     try:
         workspace = await get_agent_for_request(request)
         workspace_manager = AgentMdManager(
-            _get_memory_working_dir(workspace),
+            str(workspace.workspace_dir),
             agent_id=workspace.agent_id,
         )
-        content = workspace_manager.read_memory_md(md_name)
+        content = await asyncio.to_thread(
+            workspace_manager.read_memory_md,
+            md_path,
+        )
         return MdFileContent(content=content)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -264,13 +557,13 @@ async def read_memory_file(
 
 
 @router.put(
-    "/memory/{md_name}",
+    "/memory/{md_path:path}",
     response_model=dict,
     summary="Write a memory file",
     description="Create or update a memory file (uses active agent)",
 )
 async def write_memory_file(
-    md_name: str,
+    md_path: str,
     body: MdFileContent,
     request: Request,
 ) -> dict:
@@ -278,10 +571,14 @@ async def write_memory_file(
     try:
         workspace = await get_agent_for_request(request)
         workspace_manager = AgentMdManager(
-            _get_memory_working_dir(workspace),
+            str(workspace.workspace_dir),
             agent_id=workspace.agent_id,
         )
-        workspace_manager.write_memory_md(md_name, body.content)
+        await asyncio.to_thread(
+            workspace_manager.write_memory_md,
+            md_path,
+            body.content,
+        )
         return {"written": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -290,7 +587,7 @@ async def write_memory_file(
 @router.get(
     "/language",
     summary="Get agent language",
-    description="Get the language setting for agent MD files (en/zh/ru)",
+    description="Get the language setting for agent MD files.",
 )
 async def get_agent_language(request: Request) -> dict:
     """Get agent language setting for current agent."""
@@ -306,7 +603,7 @@ async def get_agent_language(request: Request) -> dict:
     "/language",
     summary="Update agent language",
     description=(
-        "Update the language for agent MD files (en/zh/ru). "
+        "Update the language for agent MD files. "
         "Optionally copies MD files for the new language to agent workspace."
     ),
 )
@@ -314,7 +611,7 @@ async def put_agent_language(
     request: Request,
     body: dict = Body(
         ...,
-        description='Language setting, e.g. {"language": "zh"}',
+        description='Language setting, e.g. {"language": "id"}',
     ),
 ) -> dict:
     """
@@ -524,6 +821,85 @@ async def put_transcription_provider(
     return {"provider_id": provider_id}
 
 
+@router.post(
+    "/transcribe",
+    summary="Transcribe audio to text",
+    description=(
+        "Transcribe an uploaded audio file "
+        "using the configured Whisper provider. "
+        "Returns the transcribed text."
+    ),
+)
+async def post_transcribe_audio(
+    file: UploadFile = File(..., description="Audio file to transcribe"),
+) -> dict:
+    """Transcribe uploaded audio file using configured Whisper provider."""
+    from ...agents.utils.audio_transcription import transcribe_audio
+
+    # Check transcription is enabled
+    config = load_config()
+    provider_type = config.agents.transcription_provider_type
+    if provider_type == "disabled":
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "TRANSCRIPTION_DISABLED",
+                "message": (
+                    "Transcription is disabled. "
+                    "Configure a transcription provider in Settings."
+                ),
+            },
+        )
+
+    # Validate file type
+    allowed_extensions = {
+        ".webm",
+        ".mp4",
+        ".m4a",
+        ".wav",
+        ".mp3",
+        ".ogg",
+        ".flac",
+    }
+    suffix = (
+        os.path.splitext(file.filename or "audio.webm")[1].lower() or ".webm"
+    )
+    if suffix not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "code": "UNSUPPORTED_FILE_TYPE",
+                "message": (
+                    f"Unsupported file type: {suffix}. "
+                    f"Allowed: {', '.join(sorted(allowed_extensions))}"
+                ),
+            },
+        )
+
+    data = await file.read()
+    check_upload_size(data)
+
+    # Save uploaded file to temp directory
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        text = await transcribe_audio(tmp_path)
+        if text is None:
+            raise HTTPException(
+                status_code=500,
+                detail="Transcription failed. Check provider configuration.",
+            )
+        return {"text": text}
+    finally:
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
 @router.get(
     "/running-config",
     response_model=AgentsRunningConfig,
@@ -615,45 +991,6 @@ async def put_system_prompt_files(
 # ---------------------------------------------------------------------------
 
 
-def _read_raw_zip_filename(data: bytes, header_offset: int) -> bytes | None:
-    """Read raw filename bytes from a local file header at *header_offset*."""
-    try:
-        # Local file header: sig(4) + ver(2) + flags(2) + ... + fname_len(2) + extra_len(2)
-        fname_len = struct.unpack_from("<H", data, header_offset + 26)[0]
-        fname_start = header_offset + 30
-        return data[fname_start : fname_start + fname_len]
-    except Exception:
-        return None
-
-
-def _decode_zip_filename(data: bytes, info: zipfile.ZipInfo) -> str:
-    """Decode a zip entry filename, handling non-UTF-8 archives.
-
-    Python's zipfile module always decodes filenames using CP437, which
-    corrupts non-ASCII characters (e.g. Chinese GBK filenames become
-    gibberish like τ╗äτ╗çµ₧╢...).  We parse the raw zip bytes directly
-    and try UTF-8, then GBK/GB18030 as fallbacks.
-    """
-    raw = _read_raw_zip_filename(data, info.header_offset)
-    if raw is None:
-        return info.filename  # fall back to Python's (possibly garbled) name
-
-    # UTF-8 flag (bit 11) set → trust UTF-8
-    if info.flag_bits & 0x800:
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            pass
-
-    # Try encodings in order: UTF-8 first, then Chinese legacy encodings
-    for enc in ("utf-8", "gbk", "gb2312", "gb18030"):
-        try:
-            return raw.decode(enc)
-        except (UnicodeDecodeError, LookupError):
-            continue
-    return raw.decode("utf-8", errors="replace")
-
-
 def _validate_zip_data(data: bytes, workspace_dir: Path) -> None:
     """Ensure *data* is a valid zip without path-traversal entries."""
     if not zipfile.is_zipfile(io.BytesIO(data)):
@@ -662,13 +999,12 @@ def _validate_zip_data(data: bytes, workspace_dir: Path) -> None:
             detail="Uploaded file is not a valid zip archive",
         )
     with zipfile.ZipFile(io.BytesIO(data)) as zf:
-        for info in zf.infolist():
-            decoded_name = _decode_zip_filename(data, info)
-            resolved = (workspace_dir / decoded_name).resolve()
+        for name in zf.namelist():
+            resolved = (workspace_dir / name).resolve()
             if not str(resolved).startswith(str(workspace_dir)):
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Zip contains unsafe path: {decoded_name}",
+                    detail=f"Zip contains unsafe path: {name}",
                 )
 
 
@@ -676,18 +1012,9 @@ def _extract_and_merge_zip(data: bytes, workspace_dir: Path) -> None:
     """Extract zip data and merge into workspace_dir (blocking operation)."""
     tmp_dir = None
     try:
-        tmp_dir = Path(tempfile.mkdtemp(prefix="aiwork_upload_"))
+        tmp_dir = Path(tempfile.mkdtemp(prefix="qwenpaw_upload_"))
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
-            # Manually extract each entry with proper filename decoding
-            for info in zf.infolist():
-                decoded_name = _decode_zip_filename(data, info)
-                target = tmp_dir / decoded_name
-                if info.is_dir():
-                    target.mkdir(parents=True, exist_ok=True)
-                else:
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with zf.open(info) as src, open(target, "wb") as dst:
-                        shutil.copyfileobj(src, dst)
+            zf.extractall(tmp_dir)
 
         top_entries = list(tmp_dir.iterdir())
         extract_root = tmp_dir
@@ -749,7 +1076,7 @@ async def download_workspace(request: Request):
     buf = await asyncio.to_thread(_zip_directory, workspace_dir)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-    filename = f"aiwork_workspace_{agent.agent_id}_{timestamp}.zip"
+    filename = f"qwenpaw_workspace_{agent.agent_id}_{timestamp}.zip"
 
     return StreamingResponse(
         buf,
@@ -796,8 +1123,7 @@ async def upload_workspace(
         )
 
     agent = await get_agent_for_request(request)
-    user_id = get_current_user_id()
-    workspace_dir = agent.get_user_working_dir(user_id)
+    workspace_dir = agent.workspace_dir
     data = await file.read()
 
     try:
@@ -810,3 +1136,36 @@ async def upload_workspace(
             status_code=500,
             detail=f"Failed to merge workspace: {exc}",
         ) from exc
+
+
+@router.get("/commands/available")
+async def get_available_commands(request: Request):
+    """Return all slash commands registered for the workspace.
+
+    Merges built-in system commands with plugin-registered ones
+    so the frontend can dynamically populate the slash menu.
+    """
+    agent = await get_agent_for_request(request)
+    registry = getattr(
+        getattr(agent, "plugins", None),
+        "slash_command_registry",
+        None,
+    )
+    commands = []
+    if registry is not None:
+        for name in registry.names():
+            match = registry.resolve(f"/{name}")
+            desc = ""
+            category = ""
+            if match:
+                spec, _ = match
+                desc = spec.help_text or ""
+                category = spec.category or ""
+            commands.append(
+                {
+                    "name": name,
+                    "description": desc,
+                    "category": category,
+                },
+            )
+    return ORJSONResponse({"commands": commands})

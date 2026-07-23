@@ -50,8 +50,9 @@ class SIPChannel(BaseChannel):
         self,
         process: ProcessHandler,
         on_reply_sent: OnReplySent = None,
-        show_tool_details: bool = False,
-        filter_tool_messages: bool = True,
+        show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
     ) -> None:
         super().__init__(
@@ -59,6 +60,7 @@ class SIPChannel(BaseChannel):
             on_reply_sent,
             show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
         )
         self.backend: Optional[SipBackend] = None
@@ -79,8 +81,9 @@ class SIPChannel(BaseChannel):
         process: ProcessHandler,
         config: SIPChannelConfig,
         on_reply_sent: OnReplySent = None,
-        show_tool_details: bool = False,
-        filter_tool_messages: bool = True,
+        show_tool_details: bool = True,
+        filter_tool_messages: bool = False,
+        no_text_debounce: bool = True,
         filter_thinking: bool = False,
     ) -> "SIPChannel":
         instance = cls(
@@ -88,6 +91,7 @@ class SIPChannel(BaseChannel):
             on_reply_sent,
             show_tool_details,
             filter_tool_messages=filter_tool_messages,
+            no_text_debounce=no_text_debounce,
             filter_thinking=filter_thinking,
         )
         instance._config = config
@@ -170,7 +174,7 @@ class SIPChannel(BaseChannel):
             "127.0.0.1:5060 (user: any, no auth)",
         )
         logger.info(
-            "[SIP] Dial 'sip:agent@127.0.0.1:5060' to talk with AiWork!",
+            "[SIP] Dial 'sip:agent@127.0.0.1:5060' to talk with QwenPaw!",
         )
 
     async def _stop_registrar(self) -> None:
@@ -262,7 +266,7 @@ class SIPChannel(BaseChannel):
         self,
         native_payload: Any,
     ) -> Any:
-        from agentscope_runtime.engine.schemas.agent_schemas import (
+        from aiwork.schemas import (
             AgentRequest,
             ContentType,
             Message,
@@ -272,12 +276,6 @@ class SIPChannel(BaseChannel):
         )
 
         text = native_payload.get("transcript", "")
-        # --- Prompt injection guard ---
-        if text.strip():
-            from ....security.prompt_guard import PromptGuard
-            PromptGuard.scan_or_raise(text)
-        # --- End guard ---
-
         session_id = native_payload.get("session_id", "")
         user_id = native_payload.get("from_uri", "")
 
@@ -606,11 +604,9 @@ class SIPChannel(BaseChannel):
 
         try:
             # Import here to avoid top-level dependency
-            from agentscope_runtime.engine.schemas import (
-                agent_schemas as _as,
-            )
+            from aiwork.schemas import RunStatus
 
-            completed = _as.RunStatus.Completed
+            completed = RunStatus.Completed
             async for event in self._process(request):
                 obj = getattr(event, "object", None)
                 status = getattr(event, "status", None)

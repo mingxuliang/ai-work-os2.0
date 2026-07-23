@@ -1,5 +1,6 @@
 # -*- coding: utf-8 -*-
 """Logging setup for application logging and optional file output."""
+
 import logging
 import logging.handlers
 import os
@@ -82,6 +83,26 @@ class ColorFormatter(logging.Formatter):
         original_msg = super().format(record)
 
         return f"{prefix} | {original_msg}"
+
+
+class _SafeRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    """RotatingFileHandler that tolerates Windows file-locking errors.
+
+    On Windows, ``os.rename()`` inside ``doRollover()`` raises
+    ``PermissionError`` when the log file is held open by another
+    process (e.g. a log viewer or the debug-log console reader).
+    This subclass catches the error, reopens the stream so logging
+    continues without data loss, and defers rotation to the next
+    size-exceeding emit.
+    """
+
+    def doRollover(self):
+        try:
+            super().doRollover()
+        except PermissionError:
+            if self.stream:
+                self.stream.close()
+            self.stream = self._open()
 
 
 class PlainFormatter(logging.Formatter):
@@ -167,11 +188,37 @@ def setup_logger(level: int | str = logging.INFO):
     return logger
 
 
-def add_project_file_handler(log_path: Path) -> None:
-    """Add a file handler to the project logger for daemon logs.
+def _attach_logger_file_handler(
+    logger_name: str,
+    file_handler: logging.Handler,
+    *,
+    level: int,
+) -> None:
+    """Attach a shared file handler to another logger namespace.
 
-    Windows/Linux: Uses simple FileHandler to avoid file locking issues.
-    macOS: Uses RotatingFileHandler with automatic log rotation.
+    Keeps ``propagate`` enabled so records still reach the root logger
+    (stderr / journald) while also being written to ``aiwork.log``.
+    """
+    target = logging.getLogger(logger_name)
+    target.setLevel(level)
+    base = getattr(file_handler, "baseFilename", None)
+    for handler in target.handlers:
+        handler_base = getattr(handler, "baseFilename", None)
+        if (
+            base is not None
+            and handler_base is not None
+            and Path(handler_base).resolve() == Path(base).resolve()
+        ):
+            return
+    target.addHandler(file_handler)
+
+
+def add_project_file_handler(log_path: Path) -> None:
+    """Add a rotating file handler to the project logger for daemon logs.
+
+    Uses _SafeRotatingFileHandler on all platforms with automatic log
+    rotation (max 5 MiB per file, 3 backups).  On Windows, rotation
+    errors caused by file locking are tolerated gracefully.
 
     Idempotent: if the logger already has a file handler for the same path,
     no new handler is added (avoids duplicate lines and leaked descriptors
@@ -186,22 +233,19 @@ def add_project_file_handler(log_path: Path) -> None:
     for handler in logger.handlers:
         base = getattr(handler, "baseFilename", None)
         if base is not None and Path(base).resolve() == log_path:
+            _attach_logger_file_handler(
+                "apscheduler",
+                handler,
+                level=logging.WARNING,
+            )
             return
 
-    is_windows_or_linux = platform.system() in ("Windows", "Linux")
-    if is_windows_or_linux:
-        file_handler = logging.FileHandler(
-            log_path,
-            encoding="utf-8",
-            mode="a",
-        )
-    else:
-        file_handler = logging.handlers.RotatingFileHandler(
-            log_path,
-            encoding="utf-8",
-            maxBytes=_LOG_MAX_BYTES,
-            backupCount=_LOG_BACKUP_COUNT,
-        )
+    file_handler = _SafeRotatingFileHandler(
+        log_path,
+        encoding="utf-8",
+        maxBytes=_LOG_MAX_BYTES,
+        backupCount=_LOG_BACKUP_COUNT,
+    )
 
     file_handler.setLevel(logger.level or logging.INFO)
 
@@ -209,3 +253,8 @@ def add_project_file_handler(log_path: Path) -> None:
         PlainFormatter("%(asctime)s | %(message)s", "%Y-%m-%d %H:%M:%S"),
     )
     logger.addHandler(file_handler)
+    _attach_logger_file_handler(
+        "apscheduler",
+        file_handler,
+        level=logging.WARNING,
+    )

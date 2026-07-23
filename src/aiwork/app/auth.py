@@ -2,7 +2,7 @@
 """Authentication module: password hashing, JWT tokens, and FastAPI middleware.
 
 Login is disabled by default and only enabled when the environment
-variable ``AIWORK_AUTH_ENABLED`` is set to a truthy value (``true``,
+variable ``QWENPAW_AUTH_ENABLED`` is set to a truthy value (``true``,
 ``1``, ``yes``).  Credentials are created through a web-based
 registration flow rather than environment variables, so that agents
 running inside the process cannot read plaintext passwords.
@@ -19,9 +19,11 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Optional
@@ -55,18 +57,20 @@ _PUBLIC_PATHS: frozenset[str] = frozenset(
         "/api/auth/register",
         "/api/version",
         "/api/settings/language",
-        "/api/plugins",
-        "/metrics",
-        "/health",
+        "/api/settings/upload-limit",
+        "/api/frontend_plugin",
     },
 )
 
 # Prefixes that do NOT require authentication (static assets)
+# /api/frontend_plugin/ is safe: only read-only GET handlers are registered
+# under that prefix (list + static file serving).  All write operations
+# remain under /api/plugins/ which requires authentication.
 _PUBLIC_PREFIXES: tuple[str, ...] = (
     "/assets/",
     "/logo.png",
-    "/aiwork-symbol.svg",
-    "/api/plugins/",  # plugin JS bundles served to unauthenticated login page
+    "/qwenpaw-symbol.svg",
+    "/api/frontend_plugin/",
 )
 
 
@@ -331,12 +335,12 @@ def _clean_expired_revocations() -> None:
 def is_auth_enabled() -> bool:
     """Check whether authentication is enabled via environment variable.
 
-    Returns ``True`` when ``AIWORK_AUTH_ENABLED`` is set to a truthy
+    Returns ``True`` when ``QWENPAW_AUTH_ENABLED`` is set to a truthy
     value (``true``, ``1``, ``yes``).  The presence of a registered
     user is checked separately by the middleware so that the first
     user can still reach the registration page.
     """
-    env_flag = EnvVarLoader.get_str("AIWORK_AUTH_ENABLED", "").strip().lower()
+    env_flag = EnvVarLoader.get_str("QWENPAW_AUTH_ENABLED", "").strip().lower()
     return env_flag in ("true", "1", "yes")
 
 
@@ -390,8 +394,8 @@ def register_user(
 def auto_register_from_env() -> None:
     """Auto-register admin user from environment variables.
 
-    Called once during application startup.  If ``AIWORK_AUTH_ENABLED``
-    is truthy and both ``AIWORK_AUTH_USERNAME`` and ``AIWORK_AUTH_PASSWORD``
+    Called once during application startup.  If ``QWENPAW_AUTH_ENABLED``
+    is truthy and both ``QWENPAW_AUTH_USERNAME`` and ``QWENPAW_AUTH_PASSWORD``
     are set, the admin account is created automatically — useful for
     Docker, Kubernetes, server-panel, and other automated deployments
     where interactive web registration is not practical.
@@ -406,8 +410,8 @@ def auto_register_from_env() -> None:
     if has_registered_users():
         return
 
-    username = EnvVarLoader.get_str("AIWORK_AUTH_USERNAME", "").strip()
-    password = EnvVarLoader.get_str("AIWORK_AUTH_PASSWORD", "").strip()
+    username = EnvVarLoader.get_str("QWENPAW_AUTH_USERNAME", "").strip()
+    password = EnvVarLoader.get_str("QWENPAW_AUTH_PASSWORD", "").strip()
     if not username or not password:
         return
 
@@ -562,35 +566,137 @@ def revoke_all_tokens() -> bool:
 
 
 # ---------------------------------------------------------------------------
-# FastAPI middleware
+# FastAPI middleware — client IP resolution with trusted proxy verification
 # ---------------------------------------------------------------------------
+
+_LOOPBACK = frozenset({"127.0.0.1", "::1"})
+_BRACKETED = re.compile(r"^\[([^\]]+)\](?::\d+)?$")
+_V4_PORT = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):\d+$")
+
+_MAX_WARN_IPS = 1024
+_warned_untrusted_ips: set[str] = set()
+
+
+def _normalize_ip(raw: str) -> str | None:
+    """Strip brackets, port, zone-id and validate. None on failure."""
+    if not raw:
+        return None
+    s = raw.strip()
+    m = _BRACKETED.match(s) or _V4_PORT.match(s)
+    if m:
+        s = m.group(1)
+    if "%" in s:
+        s = s.split("%", 1)[0]
+    try:
+        return str(ipaddress.ip_address(s))
+    except ValueError:
+        return None
+
+
+def _parse_networks(entries: list[str]) -> list:
+    """Parse CIDR/IP strings into network objects."""
+    nets = []
+    for entry in entries:
+        try:
+            nets.append(ipaddress.ip_network(entry, strict=False))
+        except ValueError:
+            continue
+    return nets
+
+
+def _ip_in_networks(ip_str: str, networks: list) -> bool:
+    """Check if a normalized IP string falls within any network."""
+    try:
+        addr = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    for net in networks:
+        if addr.version == net.version and addr in net:
+            return True
+    return False
+
+
+# Cached config for hot-path auth checks (avoids disk read per request)
+_auth_config_cache: tuple = (0, None, [])
+
+
+def _get_config_cached():
+    """Return (config, trusted_networks) with mtime-based cache."""
+    global _auth_config_cache  # noqa: PLW0603
+    from ..config import load_config
+    from ..config.utils import get_config_path
+
+    config_path = get_config_path()
+    try:
+        mtime_ns = config_path.stat().st_mtime_ns
+    except OSError:
+        mtime_ns = 0
+    if mtime_ns != _auth_config_cache[0] or _auth_config_cache[1] is None:
+        cfg = load_config()
+        nets = _parse_networks(cfg.security.trusted_proxies)
+        _auth_config_cache = (mtime_ns, cfg, nets)
+    return _auth_config_cache[1], _auth_config_cache[2]
+
+
+def _resolve_client_ip(request: Request) -> str:
+    """Return the real client IP.
+
+    Only trusts proxy headers when the direct TCP peer is in
+    trusted_proxies. XFF is parsed right-to-left, skipping
+    trusted IPs.
+    """
+    direct_raw = request.client.host if request.client else ""
+    direct_ip = _normalize_ip(direct_raw) or direct_raw
+
+    _cfg, networks = _get_config_cached()
+    if not networks or not _ip_in_networks(direct_ip, networks):
+        # Log once per untrusted source to avoid flooding
+        has_proxy_hdr = request.headers.get(
+            "x-forwarded-for",
+        ) or request.headers.get("x-real-ip")
+        if (
+            has_proxy_hdr
+            and direct_ip not in _warned_untrusted_ips
+            and len(_warned_untrusted_ips) < _MAX_WARN_IPS
+        ):
+            _warned_untrusted_ips.add(direct_ip)
+            logger.warning(
+                "Ignoring proxy headers from untrusted source"
+                " %s (add to security.trusted_proxies if"
+                " legitimate)",
+                direct_ip,
+            )
+        return direct_ip
+
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        for token in reversed(xff.split(",")):
+            norm = _normalize_ip(token)
+            if norm is None:
+                break
+            if not _ip_in_networks(norm, networks):
+                return norm
+
+    real_ip = _normalize_ip(
+        request.headers.get("x-real-ip", ""),
+    )
+    return real_ip or direct_ip
+
+
+resolve_client_ip = _resolve_client_ip
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
     """Middleware that checks Bearer token on protected routes."""
 
-    async def dispatch(
-        self,
-        request: Request,
-        call_next,
-    ) -> Response:
-        """Check Bearer token on protected API routes; skip public paths.
-
-        Delegates to JWTAuthMiddleware when ``AIWORK_AUTH_MODE=jwt``.
-        """
-        auth_mode = EnvVarLoader.get_str("AIWORK_AUTH_MODE", "legacy").lower()
-        if auth_mode == "jwt":
-            from .auth_jwt.middleware import JWTAuthMiddleware
-            return await JWTAuthMiddleware.dispatch_static(request, call_next)
-
+    async def dispatch(self, request: Request, call_next):
         if self._should_skip_auth(request):
             return await call_next(request)
 
         token = self._extract_token(request)
         if not token:
-            print("Not authenticated, 无token")
             return Response(
-                content=json.dumps({"detail": "Not authenticated"}),
+                content='{"detail":"Not authenticated"}',
                 status_code=401,
                 media_type="application/json",
             )
@@ -598,9 +704,7 @@ class AuthMiddleware(BaseHTTPMiddleware):
         user = verify_token(token)
         if user is None:
             return Response(
-                content=json.dumps(
-                    {"detail": "Invalid or expired token"},
-                ),
+                content='{"detail":"Invalid or expired token"}',
                 status_code=401,
                 media_type="application/json",
             )
@@ -609,43 +713,67 @@ class AuthMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
     @staticmethod
-    def _should_skip_auth(request: Request) -> bool:
-        """Return ``True`` when the request does not require auth."""
+    def _should_skip_auth(  # pylint: disable=too-many-return-statements
+        request: Request,
+    ) -> bool:
         if not is_auth_enabled() or not has_registered_users():
             return True
 
         path = request.url.path
-
-        if request.method == "OPTIONS":
-            return True
-
-        if path in _PUBLIC_PATHS or any(
-            path.startswith(p) for p in _PUBLIC_PREFIXES
+        if (
+            request.method == "OPTIONS"
+            or path in _PUBLIC_PATHS
+            or any(path.startswith(p) for p in _PUBLIC_PREFIXES)
+            or not path.startswith("/api/")
         ):
             return True
 
-        # Only protect /api/ routes
-        if not path.startswith("/api/"):
-            return True
+        cfg, _ = _get_config_cached()
+        allowed = cfg.security.allow_no_auth_hosts
+        client_ip = resolve_client_ip(request)
+        norm = _normalize_ip(client_ip) or client_ip
+        if norm not in allowed:
+            return False
 
-        # Check if client host is in allow_no_auth_hosts whitelist
-        from ..config import load_config
-
-        client_host = request.client.host if request.client else ""
-        config = load_config()
-        allowed_hosts = config.security.allow_no_auth_hosts
-        return client_host in allowed_hosts
+        # Defense-in-depth: loopback whitelist requires
+        # direct TCP peer also be loopback.
+        if norm in _LOOPBACK:
+            peer = _normalize_ip(
+                request.client.host if request.client else "",
+            )
+            if peer not in _LOOPBACK:
+                logger.warning(
+                    "Auth skip blocked: client_ip=%s but"
+                    " direct peer %s is not loopback",
+                    norm,
+                    peer,
+                )
+                return False
+        return True
 
     @staticmethod
     def _extract_token(request: Request) -> Optional[str]:
-        """Extract Bearer token from header or WebSocket query param."""
-        auth_header = request.headers.get("Authorization", "")
-        if auth_header.startswith("Bearer "):
-            return auth_header[7:]
-        if "upgrade" in request.headers.get("connection", "").lower():
+        auth = request.headers.get("Authorization", "")
+        if auth.startswith("Bearer "):
+            return auth[7:]
+        conn = request.headers.get("connection", "")
+        if "upgrade" in conn.lower():
             return request.query_params.get("token")
+        return request.query_params.get("token") or None
 
-        token = request.query_params.get("token")
-        if token:
-            return token
-        return None
+
+def check_proxy_config_sanity() -> None:
+    """Log a warning at startup if proxy config looks suspect."""
+    try:
+        cfg, _ = _get_config_cached()
+    except (OSError, ValueError):
+        return
+    sec = cfg.security
+    has_non_loopback = any(h not in _LOOPBACK for h in sec.allow_no_auth_hosts)
+    if has_non_loopback and not sec.trusted_proxies:
+        logger.warning(
+            "allow_no_auth_hosts contains non-loopback entries"
+            " but trusted_proxies is empty. If behind a reverse"
+            " proxy, add proxy IPs to"
+            " security.trusted_proxies.",
+        )

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Start AIWork-OS (in-tree QwenPaw 2.0 fork) — Linux/macOS
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
@@ -10,8 +11,16 @@ if [[ -f "$ENV_FILE" ]]; then
   set +a
 fi
 export AIWORK_KERNEL=qwenpaw2
-python -m pip install "qwenpaw==2.0.0.post3" -q
-python -m pip install -e "$ROOT/packages/aiwork-enterprise[kernel]" -q
-python -m pip install -e "$ROOT[qw2]" -q
-python "$(dirname "$0")/migrate_qw2.py" --env-file "$ENV_FILE" --all
+
+CONSOLE_DIST="$ROOT/console/dist"
+if [[ -f "$CONSOLE_DIST/index.html" ]]; then
+  export AIWORK_CONSOLE_STATIC_DIR="$CONSOLE_DIST"
+  export QWENPAW_CONSOLE_STATIC_DIR="$CONSOLE_DIST"
+  echo "Using Console UI: $CONSOLE_DIST"
+else
+  echo "WARNING: console/dist missing — run: cd console && npm ci && npm run build"
+fi
+
+python -m pip install -e "$ROOT" -q
+python -c "from aiwork.app.enterprise_doctor import run_doctor; raise SystemExit(run_doctor(governance_test=True))" || true
 exec python -m aiwork app --host 127.0.0.1 --port 8088

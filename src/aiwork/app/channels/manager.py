@@ -80,18 +80,14 @@ class ChannelManager:
         self._queue_manager: UnifiedQueueManager | None = None
         self._workspace = None
 
-        # Per-user isolation support
-        self._user_id: str | None = None  # set via set_user_id() before use
-
         # Per-channel locks to prevent concurrent restarts
         self._restart_locks: dict[str, asyncio.Lock] = {}
 
         # Track enqueue tasks for graceful shutdown
         self._enqueue_tasks: set[asyncio.Task] = set()
 
-        # Stored for dynamically creating channels not present at init time
-        self._process: ProcessHandler | None = None
-        self._on_last_dispatch: OnLastDispatch = None
+        # Track channel-start tasks for graceful shutdown
+        self._start_tasks: set[asyncio.Task] = set()
 
     @classmethod
     def from_env(
@@ -102,8 +98,7 @@ class ChannelManager:
         """
         Create channels from env and inject unified process
         (AgentRequest -> Event stream).
-        process is typically runner.stream_query, handled by AgentApp's
-        process endpoint.
+        process is typically workspace.stream_query.
         on_last_dispatch: called when a user send+reply was sent.
         """
         available = get_available_channels()
@@ -134,7 +129,7 @@ class ChannelManager:
         """
         available = get_available_channels()
         ch = config.channels
-        show_tool_details = getattr(config, "show_tool_details", False)
+        show_tool_details = getattr(config, "show_tool_details", True)
         extra = getattr(ch, "__pydantic_extra__", None) or {}
 
         channels: list[BaseChannel] = []
@@ -169,19 +164,28 @@ class ChannelManager:
             if isinstance(ch_cfg, dict):
                 filter_tool_messages = ch_cfg.get(
                     "filter_tool_messages",
-                    True,
+                    False,
                 )
                 filter_thinking = ch_cfg.get("filter_thinking", False)
+                no_text_debounce = ch_cfg.get(
+                    "no_text_debounce",
+                    True,
+                )
             else:
                 filter_tool_messages = getattr(
                     ch_cfg,
                     "filter_tool_messages",
-                    True,
+                    False,
                 )
                 filter_thinking = getattr(
                     ch_cfg,
                     "filter_thinking",
                     False,
+                )
+                no_text_debounce = getattr(
+                    ch_cfg,
+                    "no_text_debounce",
+                    True,
                 )
 
             from_config_kwargs = {
@@ -191,6 +195,7 @@ class ChannelManager:
                 "show_tool_details": show_tool_details,
                 "filter_tool_messages": filter_tool_messages,
                 "filter_thinking": filter_thinking,
+                "no_text_debounce": no_text_debounce,
                 "workspace_dir": workspace_dir,
             }
 
@@ -220,79 +225,7 @@ class ChannelManager:
                 )
                 continue
 
-        cm = cls(channels)
-        cm._process = process
-        cm._on_last_dispatch = on_last_dispatch
-        return cm
-
-    @staticmethod
-    def _create_single_channel(
-        channel_name: str,
-        channel_config,
-        process: ProcessHandler,
-        on_reply_sent=None,
-        workspace_dir=None,
-    ):
-        """Create a single channel instance from config.
-
-        Extracts the per-channel creation logic from ``from_config`` so that
-        ``restart_channel`` can add a newly-enabled channel at runtime.
-        """
-        from ..channels.registry import get_channel_registry
-        import inspect
-
-        registry = get_channel_registry()
-        ch_cls = registry.get(channel_name)
-        if ch_cls is None:
-            raise KeyError(f"Channel not registered: {channel_name}")
-
-        # Normalise dict configs (custom channels) to SimpleNamespace
-        if isinstance(channel_config, dict):
-            from types import SimpleNamespace
-
-            from ...config.config import BaseChannelConfig
-
-            defaults = BaseChannelConfig().model_dump()
-            defaults.update(channel_config)
-            channel_config = SimpleNamespace(**defaults)
-
-        # Read filter settings from config
-        if isinstance(channel_config, dict):
-            filter_tool_messages = channel_config.get(
-                "filter_tool_messages", True,
-            )
-            filter_thinking = channel_config.get("filter_thinking", False)
-        else:
-            filter_tool_messages = getattr(
-                channel_config, "filter_tool_messages", True,
-            )
-            filter_thinking = getattr(
-                channel_config, "filter_thinking", False,
-            )
-
-        from_config_kwargs = {
-            "process": process,
-            "config": channel_config,
-            "on_reply_sent": on_reply_sent,
-            "show_tool_details": True,
-            "filter_tool_messages": filter_tool_messages,
-            "filter_thinking": filter_thinking,
-            "workspace_dir": workspace_dir,
-        }
-
-        # Only pass kwargs that the channel's from_config accepts
-        sig = inspect.signature(ch_cls.from_config)
-        if not any(
-            p.kind == inspect.Parameter.VAR_KEYWORD
-            for p in sig.parameters.values()
-        ):
-            from_config_kwargs = {
-                k: v
-                for k, v in from_config_kwargs.items()
-                if k in sig.parameters
-            }
-
-        return ch_cls.from_config(**from_config_kwargs)
+        return cls(channels)
 
     def _make_enqueue_cb(self, channel_id: str) -> Callable[[Any], None]:
         """Return a callback that enqueues payload for the given channel."""
@@ -563,15 +496,33 @@ class ChannelManager:
             f"Starting channels: {[g.channel for g in snapshot]}",
         )
 
-        # Start each channel
-        for g in snapshot:
+        # Fire-and-forget: channels connect in background so startup
+        # is not blocked by slow network handshakes (e.g. WebSocket).
+        async def _start_channel(g):
             try:
                 await g.start()
             except Exception:
-                logger.exception(f"failed to start channels={g.channel}")
+                logger.exception(
+                    f"failed to start channel={g.channel}",
+                )
+
+        for g in snapshot:
+            task = asyncio.create_task(_start_channel(g))
+            self._start_tasks.add(task)
+            task.add_done_callback(self._start_tasks.discard)
 
     async def stop_all(self) -> None:
         """Stop all channels and queue manager."""
+        # Cancel in-progress channel-start tasks
+        if self._start_tasks:
+            for task in self._start_tasks:
+                task.cancel()
+            await asyncio.wait(
+                self._start_tasks,
+                timeout=3.0,
+            )
+            self._start_tasks.clear()
+
         # Cancel all pending enqueue tasks
         if self._enqueue_tasks:
             logger.info(
@@ -656,16 +607,20 @@ class ChannelManager:
                 "detail": str(exc),
             }
 
-    async def restart_channel(
-        self,
-        channel_name: str,
-    ) -> Dict[str, Any]:
+    async def restart_channel(self, channel_name: str) -> Dict[str, Any]:
         """Restart a single channel by stopping and re-starting it.
 
-        If the channel is already running it is cloned with fresh config
-        and replaced.  If the channel is not yet in this manager (e.g. it
-        was just enabled), a new instance is created from config and
-        started.
+        The channel is stopped, then a fresh instance is created via
+        clone() with the current config, and started via replace_channel().
+
+        Args:
+            channel_name: Channel identifier (e.g. "dingtalk", "telegram")
+
+        Returns:
+            Dict with restart result: channel, status, detail.
+
+        Raises:
+            KeyError: If channel is not found in this manager.
         """
         # Per-channel lock prevents concurrent restarts from
         # leaking resources (two clones started, one discarded).
@@ -675,32 +630,28 @@ class ChannelManager:
         )
         async with lock:
             channel_instance = await self.get_channel(channel_name)
+            if channel_instance is None:
+                raise KeyError(
+                    f"Channel not found: {channel_name}",
+                )
 
-            logger.info(
-                "Restarting channel: %s (user_id=%s, exists=%s)",
-                channel_name,
-                self._user_id,
-                channel_instance is not None,
-            )
+            logger.info("Restarting channel: %s", channel_name)
 
-            from ...config.config import load_user_channels
+            # Load the latest config for this channel
+            from ...config.config import load_agent_config
 
-            if self._workspace is None:
+            agent_id = self._workspace.agent_id if self._workspace else None
+            if agent_id is None:
                 raise RuntimeError(
                     "Cannot restart channel: workspace not set"
                     " on ChannelManager",
                 )
 
-            ws_dir = (
-                self._workspace.workspace_dir
-                if hasattr(self._workspace, "workspace_dir")
-                else self._workspace.workspace_dir
-            )
-
-            channels_cfg = load_user_channels(ws_dir, self._user_id)
+            agent_config = load_agent_config(agent_id)
+            channels_cfg = agent_config.channels
             if channels_cfg is None:
                 raise RuntimeError(
-                    f"No channels config found for user {self._user_id}",
+                    f"No channels config found for agent" f" {agent_id}",
                 )
 
             # Get channel-specific config
@@ -721,27 +672,11 @@ class ChannelManager:
                 channel_cfg = extra.get(channel_name)
             if channel_cfg is None:
                 raise RuntimeError(
-                    f"No config found for channel '{channel_name}'",
+                    f"No config found for channel" f" '{channel_name}'",
                 )
 
-            if channel_instance is not None:
-                # Existing channel — clone with fresh config and replace
-                new_channel = channel_instance.clone(channel_cfg)
-            else:
-                # Channel not running yet (was disabled / first enable)
-                # — create fresh instance from config
-                new_channel = self._create_single_channel(
-                    channel_name=channel_name,
-                    channel_config=channel_cfg,
-                    process=self._process,
-                    on_reply_sent=self._on_last_dispatch,
-                    workspace_dir=ws_dir,
-                )
-
-            # Inject JWT owner so build_agent_request_from_user_content()
-            # uses the correct user_id for per-user directory isolation.
-            new_channel.owner_user_id = self._user_id or ""
-
+            # Clone a fresh instance and replace
+            new_channel = channel_instance.clone(channel_cfg)
             if self._workspace is not None:
                 new_channel.set_workspace(
                     self._workspace,
@@ -756,22 +691,8 @@ class ChannelManager:
             return {
                 "channel": channel_name,
                 "status": "restarted",
-                "detail": f"Channel '{channel_name}' has been restarted.",
+                "detail": (f"Channel '{channel_name}'" " has been restarted."),
             }
-
-    def set_user_id(self, user_id: str) -> None:
-        """Set the user ID for per-user config isolation.
-
-        restart_channel() loads config from users/{user_id}/channels.json.
-
-        Also propagates the JWT user_id to all owned channels so that
-        build_agent_request_from_user_content() uses it as the
-        AgentRequest.user_id, which drives per-user working-directory
-        isolation (users/{user_id}/).
-        """
-        self._user_id = user_id
-        for ch in self.channels:
-            ch.owner_user_id = user_id
 
     def set_workspace(self, workspace) -> None:
         """Set workspace and inject to all channels.

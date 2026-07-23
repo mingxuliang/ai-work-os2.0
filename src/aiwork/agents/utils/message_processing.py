@@ -8,15 +8,12 @@ This module handles:
 """
 import asyncio
 import logging
-import mimetypes
 import os
-import re
-import time
 import urllib.parse
 from pathlib import Path
 from typing import Optional
 
-from agentscope.message import Msg
+from agentscope.message import Msg, TextBlock
 
 from ...config import load_config
 from .file_handling import download_file_from_base64, download_file_from_url
@@ -188,6 +185,11 @@ def _convert_audio_to_wav(src_path: str) -> Optional[str]:
         return None
 
 
+def _local_file_url(path: str) -> str:
+    """Build a ``file://`` URL without percent-encoding non-ASCII chars."""
+    return "file://" + str(Path(path).resolve())
+
+
 def _update_block_with_local_path(
     block: dict,
     block_type: str,
@@ -202,13 +204,13 @@ def _update_block_with_local_path(
         if block_type == "audio":
             block["source"] = {
                 "type": "url",
-                "url": Path(local_path).as_uri(),
+                "url": _local_file_url(local_path),
                 "media_type": _media_type_from_path(local_path),
             }
         else:
             block["source"] = {
                 "type": "url",
-                "url": Path(local_path).as_uri(),
+                "url": _local_file_url(local_path),
             }
     return block
 
@@ -277,7 +279,7 @@ async def _process_audio_block(
             return True
         block["source"] = {
             "type": "url",
-            "url": Path(audio_path).as_uri(),
+            "url": _local_file_url(audio_path),
             "media_type": _media_type_from_path(audio_path),
         }
         return True
@@ -330,7 +332,7 @@ async def _process_single_block(
         if isinstance(data, str) and os.path.isfile(data):
             block["source"] = {
                 "type": "url",
-                "url": Path(data).as_uri(),
+                "url": _local_file_url(data),
                 "media_type": _media_type_from_path(data),
             }
             source = block["source"]
@@ -381,13 +383,64 @@ async def _process_single_block(
         return None
 
 
-async def process_file_and_media_blocks_in_message(msg) -> None:
-    """
-    Process file and media blocks (file, image, audio, video) in messages.
-    Downloads to local and updates paths/URLs.
+# pylint: disable=too-many-return-statements
+def _coerce_block_to_dict(
+    block,
+) -> dict | None:
+    """Convert a Pydantic block (or dict) to a dict for processing.
 
-    Args:
-        msg: The message object (Msg or list[Msg]) to process.
+    Returns ``None`` for blocks that are not file/media types.
+    For 2.0 ``DataBlock``, maps ``type="data"`` back to the concrete
+    media category (``"image"``/``"audio"``/``"video"``) so downstream
+    helpers recognise it.
+    """
+    if isinstance(block, dict):
+        return block
+
+    btype = getattr(block, "type", None)
+    if btype == "data":
+        source = getattr(block, "source", None)
+        if source is None:
+            return None
+        mt = getattr(source, "media_type", "") or ""
+        main = mt.split("/")[0]
+        if main not in ("image", "audio", "video"):
+            # Generic data block (e.g. application/*) — treat as file
+            main = "file"
+        src_dict: dict = {}
+        src_type = getattr(source, "type", None)
+        if src_type == "url":
+            url_str = str(getattr(source, "url", ""))
+            if url_str.startswith("file://"):
+                url_str = url_str.removeprefix("file://")
+            src_dict = {"type": "url", "url": url_str, "media_type": mt}
+        elif src_type == "base64":
+            src_dict = {
+                "type": "base64",
+                "data": getattr(source, "data", ""),
+                "media_type": mt,
+            }
+        else:
+            return None
+        return {
+            "type": main,
+            "source": src_dict,
+            "filename": getattr(block, "name", None),
+        }
+
+    if btype in ("file", "image", "audio", "video"):
+        if hasattr(block, "model_dump"):
+            return block.model_dump()
+        return None
+
+    return None
+
+
+async def process_file_and_media_blocks_in_message(msg) -> None:
+    """Process file and media blocks (file, image, audio, video) in messages.
+
+    Downloads to local and updates paths/URLs.  Handles both dict blocks
+    (1.x) and Pydantic block objects (2.0 ``DataBlock``).
     """
     messages = (
         [msg] if isinstance(msg, Msg) else msg if isinstance(msg, list) else []
@@ -403,14 +456,40 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
         downloaded_files = []
 
         for i, block in enumerate(message.content):
+            # === 2.0 Pydantic DataBlock fast-path ===
+            # Console uploads land as ``DataBlock(URLSource(url=file:///..))``
+            # already pointing at ``media_dir``.  Skip the dict-based
+            # download / mutation entirely (it would replace the Pydantic
+            # block with a dict and break ``msg.has_content_blocks(...)``
+            # in agentscope ``_handle_incoming_messages``).  We only need
+            # the local path for the sibling-text-block injection below.
             if not isinstance(block, dict):
+                source = getattr(block, "source", None)
+                url = str(getattr(source, "url", "")) if source else ""
+                if url.startswith("file://"):
+                    local_path = url.removeprefix("file://")
+                    downloaded_files.append((i, local_path))
+                # Remote URL or no URL on a Pydantic block: skip silently.
+                # Adding remote-download for Pydantic DataBlock is a
+                # separate feature (would need to also convert the dict
+                # result back into a DataBlock to preserve the array
+                # type homogeneity that 2.0 expects).
                 continue
 
-            block_type = block.get("type")
+            # === 1.x legacy dict path ===
+            block_dict = _coerce_block_to_dict(block)
+            if block_dict is None:
+                continue
+
+            block_type = block_dict.get("type")
             if block_type not in ["file", "image", "audio", "video"]:
                 continue
 
-            local_path = await _process_single_block(message.content, i, block)
+            local_path = await _process_single_block(
+                message.content,
+                i,
+                block_dict,
+            )
             if local_path:
                 downloaded_files.append((i, local_path))
 
@@ -422,273 +501,58 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
                     if lang == "zh"
                     else f"User uploaded a file, downloaded to {local_path}"
                 )
-                text_block = {"type": "text", "text": text}
-                message.content.insert(i + 1, text_block)
+                message.content.insert(
+                    i + 1,
+                    TextBlock(type="text", text=text),
+                )
 
 
-# ---------------------------------------------------------------------------
-# LLM output URL resolution
-# ---------------------------------------------------------------------------
-
-# Pattern to match llm-output download URLs in chat text.
-# Handles:
-#   /api/llm-outputs/429/download
-#   /api/llm-outputs/429/download?token=eyJ...
-#   http://localhost:5173/api/llm-outputs/429/download?token=eyJ...
-# The full match (group 0) is replaced so no URL fragments remain.
-_LLM_OUTPUT_URL_RE = re.compile(
-    r"(?:https?://\S*?)?"                 # optional http(s)://host:port prefix
-    r"/api/llm-outputs/(\d+)/download"    # core path + capture output_id
-    r"(?:\?\S*)?",                        # optional ?query string
-)
-
-CACHE_TTL_SECONDS = 7 * 24 * 3600  # 7 days
-CLEANUP_INTERVAL_SECONDS = 3600    # debounce: 1 hour
-
-_last_cleanup_at: float = 0.0
-
-
-async def _cleanup_expired_cache(cache_dir: Path, ttl: int) -> None:
-    """Async delete files in *cache_dir* whose mtime exceeds *ttl* seconds."""
-    try:
-        if not cache_dir.is_dir():
-            return
-        now = time.time()
-        for f in cache_dir.iterdir():
-            if f.is_file() and now - f.stat().st_mtime > ttl:
-                await asyncio.to_thread(f.unlink, missing_ok=True)
-    except Exception:
-        logger.debug("Cache cleanup failed", exc_info=True)
-
-
-def _schedule_cache_cleanup(cache_dir: Path) -> None:
-    """Fire-and-forget cache cleanup with a 1-hour debounce."""
-    global _last_cleanup_at
-    now = time.time()
-    if now - _last_cleanup_at < CLEANUP_INTERVAL_SECONDS:
-        return
-    _last_cleanup_at = now
-    asyncio.create_task(_cleanup_expired_cache(cache_dir, CACHE_TTL_SECONDS))
-
-
-def _mime_to_block_type(mime_type: str) -> str:
-    """Map a MIME type to a content block type."""
-    if not mime_type:
-        return "file"
-    if mime_type.startswith("image/"):
-        return "image"
-    if mime_type.startswith("video/"):
-        return "video"
-    if mime_type.startswith("audio/"):
-        return "audio"
-    return "file"
-
-
-def _build_local_block(
-    block_type: str,
-    local_path: str,
-    filename: str,
-    mime_type: str,
-) -> dict:
-    """Build a content block for a locally-available file.
-
-    Follows the same format as :func:`_update_block_with_local_path`.
-    """
-    if block_type == "file":
-        return {
-            "type": "file",
-            "source": local_path,
-            "filename": filename or os.path.basename(local_path),
-        }
-    if block_type == "audio":
-        return {
-            "type": "audio",
-            "source": {
-                "type": "url",
-                "url": Path(local_path).as_uri(),
-                "media_type": mime_type or _media_type_from_path(local_path),
-            },
-        }
-    # image / video
-    return {
-        "type": block_type,
-        "source": {
-            "type": "url",
-            "url": Path(local_path).as_uri(),
-        },
-    }
-
-
-async def process_llm_output_urls_in_message(
-    msg,
-    cache_dir: str,
-) -> None:
-    """Scan text blocks for ``/api/llm-outputs/{id}/download`` URLs,
-    resolve them to local files (cache or MinIO download), and replace
-    each URL with a content block the LLM can consume.
+def is_first_user_interaction(messages: list) -> bool:
+    """Check if this is the first user interaction.
 
     Args:
-        msg: A single ``Msg`` or a list of ``Msg`` objects.
-        cache_dir: Local directory for cached downloads.
-    """
-    from ...llm_output import download_to_local
-    from ...app.agent_context import get_current_user_id
+        messages: List of Msg objects from memory.
 
-    messages = (
-        [msg] if isinstance(msg, Msg) else msg if isinstance(msg, list) else []
+    Returns:
+        bool: True if this is the first user message with no assistant
+              responses.
+    """
+    system_prompt_count = sum(1 for msg in messages if msg.role == "system")
+    non_system_messages = messages[system_prompt_count:]
+
+    user_msg_count = sum(
+        1 for msg in non_system_messages if msg.role == "user"
+    )
+    assistant_msg_count = sum(
+        1 for msg in non_system_messages if msg.role == "assistant"
     )
 
-    cache_path = Path(cache_dir)
+    return user_msg_count == 1 and assistant_msg_count == 0
 
-    # Schedule a lazy cleanup in the background (debounced)
-    _schedule_cache_cleanup(cache_path)
 
-    user_id = get_current_user_id()
-    if not user_id:
-        logger.warning(
-            "Cannot resolve LLM output URLs without a current user_id",
-        )
+def prepend_to_message_content(msg, guidance: str) -> None:
+    """Prepend guidance text to message content.
+
+    Handles both dict blocks and Pydantic TextBlock objects.
+    """
+    if isinstance(msg.content, str):
+        msg.content = guidance + "\n\n" + msg.content
         return
 
-    for message in messages:
-        if not isinstance(message, Msg):
-            continue
-        if not isinstance(message.content, list):
-            continue
+    if not isinstance(msg.content, list):
+        return
 
-        # Track which output_ids we've already handled in this message
-        seen_ids: set[int] = set()
-        # Collected blocks to append at the end of the message content.
-        # Each entry is (insert_after_position, block_dict).
-        appended_blocks: list[tuple[int, dict]] = []
+    for block in msg.content:
+        btype = (
+            block.get("type")
+            if isinstance(block, dict)
+            else getattr(block, "type", None)
+        )
+        if btype == "text":
+            if isinstance(block, dict):
+                block["text"] = guidance + "\n\n" + block.get("text", "")
+            else:
+                block.text = guidance + "\n\n" + (block.text or "")
+            return
 
-        for i, block in enumerate(message.content):
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") != "text":
-                continue
-
-            text: str = block.get("text", "")
-            if not text:
-                continue
-
-            matches = list(_LLM_OUTPUT_URL_RE.finditer(text))
-            if not matches:
-                continue
-
-            for match in matches:
-                output_id = int(match.group(1))
-
-                if output_id in seen_ids:
-                    continue
-                seen_ids.add(output_id)
-
-                # --- Resolve file ---
-                local_path: Optional[str] = None
-                fallback_presigned_url: Optional[str] = None
-                fallback_filename: str = f"file_{output_id}"
-
-                permission_denied = False
-                try:
-                    local_path = await download_to_local(
-                        output_id, user_id, str(cache_path),
-                    )
-                except PermissionError:
-                    permission_denied = True
-                    local_path = None
-                    logger.debug(
-                        "Permission denied for output_id=%d user=%s",
-                        output_id, user_id,
-                    )
-                except Exception:
-                    logger.debug(
-                        "download_to_local failed for output_id=%d",
-                        output_id, exc_info=True,
-                    )
-
-                if local_path is None and not permission_denied:
-                    # Try to generate a presigned URL fallback.
-                    try:
-                        from ...llm_output.minio_client import (
-                            get_llm_output_minio_client,
-                        )
-                        from ...app.auth_jwt.database import (
-                            get_session_factory,
-                        )
-                        from ...llm_output.models import LlmOutputRecord
-                        from sqlalchemy import select
-
-                        factory = get_session_factory()
-                        async with factory() as db:
-                            q = select(LlmOutputRecord).where(
-                                LlmOutputRecord.id == output_id,
-                                LlmOutputRecord.user_id == user_id,
-                                LlmOutputRecord.is_deleted == False,  # noqa: E712
-                            )
-                            record = (await db.execute(q)).scalar_one_or_none()
-
-                        if record is not None:
-                            fallback_filename = record.original_filename
-                            minio = get_llm_output_minio_client()
-                            if minio is not None:
-                                fallback_presigned_url = (
-                                    await minio.presigned_get_url(
-                                        record.object_key,
-                                    )
-                                )
-                    except Exception:
-                        logger.debug(
-                            "Presigned URL fallback failed for output_id=%d",
-                            output_id, exc_info=True,
-                        )
-
-                # --- Append notice / content block ---
-                # Original text is NEVER modified.  File info is delivered
-                # via additional blocks so the user's chat history stays
-                # intact.
-                if local_path is not None:
-                    mime_type, _ = mimetypes.guess_type(local_path)
-                    block_type = _mime_to_block_type(mime_type or "")
-                    filename = os.path.basename(local_path)
-
-                    if block_type == "file":
-                        # Formatters skip "file" blocks — embed path in a
-                        # text notice so the LLM can use read_file.
-                        appended_blocks.append((i, {
-                            "type": "text",
-                            "text": (
-                                f"[文件引用] {filename}"
-                                f" 已下载到 {local_path}"
-                            ),
-                        }))
-                    else:
-                        # image / video / audio → formatter handles natively
-                        content_block = _build_local_block(
-                            block_type, local_path, filename, mime_type or "",
-                        )
-                        appended_blocks.append((i, content_block))
-                elif fallback_presigned_url is not None:
-                    appended_blocks.append((i, {
-                        "type": "text",
-                        "text": (
-                            f"[文件引用] {fallback_filename}"
-                            f" 可通过以下链接获取: {fallback_presigned_url}"
-                        ),
-                    }))
-                elif permission_denied:
-                    appended_blocks.append((i, {
-                        "type": "text",
-                        "text": "[文件引用] 没有文件加载权限",
-                    }))
-                else:
-                    appended_blocks.append((i, {
-                        "type": "text",
-                        "text": f"[文件引用] 文件不可用: {fallback_filename}",
-                    }))
-
-        # Insert appended blocks after their originating text block.
-        # Process in reverse so earlier insertions don't shift later indices.
-        for pos, new_block in reversed(appended_blocks):
-            message.content.insert(pos + 1, new_block)
-
-
+    msg.content.insert(0, TextBlock(type="text", text=guidance))

@@ -10,15 +10,15 @@ class Registry(Generic[T]):
     """Generic registry for registering and retrieving implementations.
 
     Example:
-        from aiwork.agents.context.base_context_manager import (
-            context_registry,
+        from aiwork.agents.memory.base_memory_manager import (
+            memory_registry,
         )
 
-        @context_registry.register("light")
-        class LightContextManager(BaseContextManager):
+        @memory_registry.register("remelight")
+        class ReMeLightMemoryManager(BaseMemoryManager):
             ...
 
-        cls = context_registry.get("light")
+        cls = memory_registry.get("remelight")
         instance = cls(working_dir=..., agent_id=...)
     """
 

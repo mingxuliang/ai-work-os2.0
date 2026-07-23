@@ -1,96 +1,66 @@
 # -*- coding: utf-8 -*-
 # flake8: noqa: E501
 # pylint: disable=line-too-long
-import asyncio
 import os
 from pathlib import Path
 from typing import Optional
 
-from agentscope.message import TextBlock
-from agentscope.tool import ToolResponse
+import aiofiles
+from agentscope.message import TextBlock, ToolResultState
+from agentscope.tool import ToolChunk
 
 from .utils import (
+    build_truncation_metadata,
     truncate_text_output,
     read_file_safe,
     DEFAULT_MAX_BYTES,
+    TRUNCATION_METADATA_KEY,
 )
 from ...config.context import (
     get_current_workspace_dir,
     get_current_recent_max_bytes,
 )
-from ...security.sandbox import (
-    SandboxBoundaryError,
-    is_sandbox_enabled,
-    resolve_tool_path_string,
-)
-from ...constant import WORKING_DIR, TRUNCATION_NOTICE_MARKER
+from ...constant import WORKING_DIR
+from ...runtime.tool_registry import tool_descriptor
 
 
+def _path_to_file_url(path: str) -> str:
+    """Convert a local file path to a ``file://`` URL.
 
-# def _resolve_file_path(file_path: str) -> str:
-#     """Resolve file path: use absolute path as-is,
-#     resolve relative path from current workspace or WORKING_DIR.
+    Does NOT percent-encode non-ASCII characters because agentscope's
+    DashScope formatter extracts the local path from the URL without
+    ``unquote()``, causing ``FileNotFoundError`` for files with
+    non-ASCII names (e.g. Chinese characters).
+    """
+    abs_path = os.path.abspath(path)
+    if os.name == "nt":
+        abs_path = abs_path.replace("\\", "/")
 
-#     Args:
-#         file_path: The input file path (absolute or relative).
-
-#     Returns:
-#         The resolved absolute file path as string.
-#     """
-#     path = Path(file_path).expanduser()
-#     if path.is_absolute():
-#         return str(path)
-#     else:
-#         # Use current workspace_dir from context, fallback to WORKING_DIR
-#         workspace_dir = get_current_workspace_dir() or WORKING_DIR
-#         return str(workspace_dir / file_path)
+    if os.name == "nt":
+        if abs_path.startswith("//"):
+            return f"file:{abs_path}"
+        return f"file:///{abs_path}"
+    return f"file://{abs_path}"
 
 
-def _resolve_read_path(file_path: str) -> str:
-    """Resolve a readable file path under sandbox read policy."""
-    if is_sandbox_enabled():
-        return resolve_tool_path_string(file_path, mode="read")
+def _resolve_file_path(file_path: str) -> str:
+    """Resolve file path: use absolute path as-is,
+    resolve relative path from current workspace or WORKING_DIR.
+
+    Args:
+        file_path: The input file path (absolute or relative).
+
+    Returns:
+        The resolved absolute file path as string.
+    """
     path = Path(file_path).expanduser()
-    base = get_current_workspace_dir() or WORKING_DIR
     if path.is_absolute():
-        return str(path.resolve(strict=False))
-    return str((Path(base) / file_path).resolve(strict=False))
+        return str(path)
+    else:
+        # Use current workspace_dir from context, fallback to WORKING_DIR
+        workspace_dir = get_current_workspace_dir() or WORKING_DIR
+        return str(workspace_dir / file_path)
 
-
-def _resolve_write_path(file_path: str) -> str:
-    """Resolve a writable file path under sandbox write policy."""
-    if is_sandbox_enabled():
-        return resolve_tool_path_string(file_path, mode="write")
-    path = Path(file_path).expanduser()
-    base = get_current_workspace_dir() or WORKING_DIR
-    if path.is_absolute():
-        return str(path.resolve(strict=False))
-    return str((Path(base) / file_path).resolve(strict=False))
-
-
-def _resolve_file_path(file_path: str, *, mode: str = "read") -> str:
-    if mode == "write":
-        return _resolve_write_path(file_path)
-    return _resolve_read_path(file_path)
-
-
-def _resolve_file_path_or_error(
-    file_path: str,
-    *,
-    mode: str = "read",
-) -> str | ToolResponse:
-    """Resolve path or return a ToolResponse error for sandbox violations."""
-    try:
-        return _resolve_file_path(file_path, mode=mode)
-    except SandboxBoundaryError as exc:
-        return ToolResponse(
-            content=[
-                TextBlock(
-                    type="text",
-                    text=f"Error: {exc}",
-                ),
-            ],
-        )
 
 def _get_encoding_for_file(file_path: str) -> str:
     """Determine the appropriate encoding for a file based on its type.
@@ -116,11 +86,12 @@ def _get_encoding_for_file(file_path: str) -> str:
     return "utf-8"
 
 
+@tool_descriptor(requires_sandbox=("file_read",), async_execution=True)
 async def read_file(  # pylint: disable=too-many-return-statements
     file_path: str,
     start_line: Optional[int] = None,
     end_line: Optional[int] = None,
-) -> ToolResponse:
+) -> ToolChunk:
     """Read a file. Relative paths resolve from WORKING_DIR.
 
     Use start_line/end_line to read a specific line range (output includes
@@ -140,7 +111,9 @@ async def read_file(  # pylint: disable=too-many-return-statements
         try:
             start_line = int(start_line)
         except (ValueError, TypeError):
-            return ToolResponse(
+            return ToolChunk(
+                is_last=True,
+                state=ToolResultState.ERROR,
                 content=[
                     TextBlock(
                         type="text",
@@ -153,7 +126,9 @@ async def read_file(  # pylint: disable=too-many-return-statements
         try:
             end_line = int(end_line)
         except (ValueError, TypeError):
-            return ToolResponse(
+            return ToolChunk(
+                is_last=True,
+                state=ToolResultState.ERROR,
                 content=[
                     TextBlock(
                         type="text",
@@ -162,14 +137,12 @@ async def read_file(  # pylint: disable=too-many-return-statements
                 ],
             )
 
-#    file_path = _resolve_file_path(file_path)
-    resolved = _resolve_file_path_or_error(file_path, mode="read")
-    if isinstance(resolved, ToolResponse):
-        return resolved
-    file_path = resolved
+    file_path = _resolve_file_path(file_path)
 
     if not os.path.exists(file_path):
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -179,7 +152,9 @@ async def read_file(  # pylint: disable=too-many-return-statements
         )
 
     if not os.path.isfile(file_path):
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -198,7 +173,9 @@ async def read_file(  # pylint: disable=too-many-return-statements
         e = min(total, end_line if end_line is not None else total)
 
         if s > total:
-            return ToolResponse(
+            return ToolChunk(
+                is_last=True,
+                state=ToolResultState.ERROR,
                 content=[
                     TextBlock(
                         type="text",
@@ -208,7 +185,9 @@ async def read_file(  # pylint: disable=too-many-return-statements
             )
 
         if s > e:
-            return ToolResponse(
+            return ToolChunk(
+                is_last=True,
+                state=ToolResultState.ERROR,
                 content=[
                     TextBlock(
                         type="text",
@@ -222,37 +201,42 @@ async def read_file(  # pylint: disable=too-many-return-statements
 
         # Apply smart truncation (consistent with shell output format)
         max_bytes = get_current_recent_max_bytes() or DEFAULT_MAX_BYTES
-        text = truncate_text_output(
+        text, metadata = truncate_text_output(
             selected_content,
             start_line=s,
             total_lines=total,
             file_path=file_path,
+            file_size_bytes=len(content.encode("utf-8")),
             max_bytes=max_bytes,
         )
 
         # Add continuation hint if partial read without truncation.
-        # Use TRUNCATION_NOTICE_MARKER format so ToolResultCompactor can
-        # re-truncate with the correct start_line when compacting old messages.
+        # Use TRUNCATION_NOTICE_MARKER format so ToolResultPruningMiddleware can
+        # re-truncate with the correct start_line when pruning old messages.
         if text == selected_content and e < total:
             content_bytes = len(text.encode("utf-8"))
-            notice = (
-                TRUNCATION_NOTICE_MARKER + f"\nThe output above was truncated."
-                f"\nThe full content is saved to the file "
-                f"and contains {total} lines in total."
-                f"\nThis excerpt starts at line {s} and "
-                f"covers the next {content_bytes} bytes."
-                "\nIf the current content is not enough, "
-                f"call `read_file` with file_path={file_path} "
-                f"start_line={e + 1} to read more."
+            metadata = build_truncation_metadata(
+                file_path=file_path,
+                file_size_bytes=len(content.encode("utf-8")),
+                total_lines=total,
+                start_line=s,
+                max_bytes=content_bytes,
+                excerpt_bytes=content_bytes,
+                read_from=e + 1,
             )
-            text = text + notice
+            text += metadata[TRUNCATION_METADATA_KEY]["0"]["notice"]
 
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.SUCCESS,
             content=[TextBlock(type="text", text=text)],
+            metadata=metadata,
         )
 
     except Exception as e:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -262,10 +246,11 @@ async def read_file(  # pylint: disable=too-many-return-statements
         )
 
 
+@tool_descriptor(requires_sandbox=("file_write",), async_execution=True)
 async def write_file(
     file_path: str,
     content: str,
-) -> ToolResponse:
+) -> ToolChunk:
     """Create or overwrite a file. Relative paths resolve from WORKING_DIR.
 
     Args:
@@ -276,7 +261,9 @@ async def write_file(
     """
 
     if not file_path:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -285,17 +272,15 @@ async def write_file(
             ],
         )
 
-#    file_path = _resolve_file_path(file_path)
-    resolved = _resolve_file_path_or_error(file_path, mode="write")
-    if isinstance(resolved, ToolResponse):
-        return resolved
-    file_path = resolved
-	
+    file_path = _resolve_file_path(file_path)
     encoding = _get_encoding_for_file(file_path)
 
     try:
-        await asyncio.to_thread(_write_file_sync, file_path, content, encoding)
-        return ToolResponse(
+        async with aiofiles.open(file_path, "w", encoding=encoding) as file:
+            await file.write(content)
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.SUCCESS,
             content=[
                 TextBlock(
                     type="text",
@@ -304,7 +289,9 @@ async def write_file(
             ],
         )
     except Exception as e:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -314,18 +301,13 @@ async def write_file(
         )
 
 
-def _write_file_sync(file_path: str, content: str, encoding: str) -> None:
-    """Synchronous file write — offloaded to a thread via asyncio.to_thread."""
-    with open(file_path, "w", encoding=encoding) as file:
-        file.write(content)
-
-
 # pylint: disable=too-many-return-statements
+@tool_descriptor(requires_sandbox=("file_write",), async_execution=True)
 async def edit_file(
     file_path: str,
     old_text: str,
     new_text: str,
-) -> ToolResponse:
+) -> ToolChunk:
     """Find-and-replace text in a file. All occurrences of old_text are
     replaced with new_text. Relative paths resolve from WORKING_DIR.
 
@@ -339,7 +321,9 @@ async def edit_file(
     """
 
     if not file_path:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -348,14 +332,12 @@ async def edit_file(
             ],
         )
 
-#    resolved_path = _resolve_file_path(file_path)
-    resolved = _resolve_file_path_or_error(file_path, mode="read")
-    if isinstance(resolved, ToolResponse):
-        return resolved
-    resolved_path = resolved
+    resolved_path = _resolve_file_path(file_path)
 
     if not os.path.exists(resolved_path):
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -365,7 +347,9 @@ async def edit_file(
         )
 
     if not os.path.isfile(resolved_path):
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -377,7 +361,9 @@ async def edit_file(
     try:
         content = await read_file_safe(resolved_path)
     except Exception as e:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -387,7 +373,9 @@ async def edit_file(
         )
 
     if old_text not in content:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -403,11 +391,13 @@ async def edit_file(
     )
 
     if write_response.content and len(write_response.content) > 0:
-        write_text = write_response.content[0].get("text", "")
+        write_text = getattr(write_response.content[0], "text", "")
         if write_text.startswith("Error:"):
             return write_response
 
-    return ToolResponse(
+    return ToolChunk(
+        is_last=True,
+        state=ToolResultState.SUCCESS,
         content=[
             TextBlock(
                 type="text",
@@ -417,16 +407,15 @@ async def edit_file(
     )
 
 
-def _append_file_sync(file_path: str, content: str, encoding: str) -> None:
-    """Synchronous file append — offloaded to a thread via asyncio.to_thread."""
-    with open(file_path, "a", encoding=encoding) as file:
-        file.write(content)
-
-
+@tool_descriptor(
+    requires_sandbox=("file_write",),
+    async_execution=True,
+    enabled_by_default=False,
+)
 async def append_file(
     file_path: str,
     content: str,
-) -> ToolResponse:
+) -> ToolChunk:
     """Append content to the end of a file. Relative paths resolve from
     WORKING_DIR.
 
@@ -438,7 +427,9 @@ async def append_file(
     """
 
     if not file_path:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",
@@ -447,16 +438,15 @@ async def append_file(
             ],
         )
 
-#    file_path = _resolve_file_path(file_path)
-    resolved = _resolve_file_path_or_error(file_path, mode="write")
-    if isinstance(resolved, ToolResponse):
-        return resolved
-    file_path = resolved
+    file_path = _resolve_file_path(file_path)
     encoding = _get_encoding_for_file(file_path)
 
     try:
-        await asyncio.to_thread(_append_file_sync, file_path, content, encoding)
-        return ToolResponse(
+        with open(file_path, "a", encoding=encoding) as file:
+            file.write(content)
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.SUCCESS,
             content=[
                 TextBlock(
                     type="text",
@@ -465,7 +455,9 @@ async def append_file(
             ],
         )
     except Exception as e:
-        return ToolResponse(
+        return ToolChunk(
+            is_last=True,
+            state=ToolResultState.ERROR,
             content=[
                 TextBlock(
                     type="text",

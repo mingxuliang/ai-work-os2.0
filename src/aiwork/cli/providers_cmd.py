@@ -8,7 +8,7 @@ from typing import Optional
 
 import click
 
-from agentscope_runtime.engine.schemas.exception import (
+from aiwork.exceptions import (
     AppBaseException,
 )
 
@@ -24,7 +24,7 @@ def _get_local_model_manager():
         click.echo(
             click.style(
                 "Local model dependencies not installed. "
-                "Install with: pip install 'aiwork[local]'",
+                "Install with: pip install 'qwenpaw[local]'",
                 fg="red",
             ),
         )
@@ -211,9 +211,14 @@ def configure_provider_api_key_interactive(
         )
         return provider_id
 
-    hint = (
-        f"prefix: {defn.api_key_prefix}" if defn.api_key_prefix else "optional"
+    prefixes = (
+        defn.api_key_prefixes
+        if defn.api_key_prefixes
+        else [defn.api_key_prefix]
+        if defn.api_key_prefix
+        else []
     )
+    hint = f"prefix: {', '.join(prefixes)}" if prefixes else "optional"
     api_key = click.prompt(
         f"API key ({hint})",
         default=current_key or "",
@@ -361,7 +366,7 @@ def configure_llm_slot_interactive(*, use_defaults: bool = False) -> None:
     if not eligible:
         if use_defaults:
             click.echo(
-                "No LLM provider configured. Run 'aiwork models config' "
+                "No LLM provider configured. Run 'qwenpaw models config' "
                 "to configure later.",
             )
             return
@@ -421,7 +426,7 @@ def configure_llm_slot_interactive(*, use_defaults: bool = False) -> None:
     if not model and use_defaults:
         click.echo(
             f"No default model for {defn.name}. "
-            "Run 'aiwork models config' to set one.",
+            "Run 'qwenpaw models config' to set one.",
         )
         return
     try:
@@ -506,16 +511,23 @@ def list_cmd() -> None:
                     click.echo(f"    - {m.name}")
             else:
                 click.echo("  No models downloaded.")
-                click.echo("  Use 'aiwork models download' to add models.")
+                click.echo("  Use 'qwenpaw models download' to add models.")
         else:
             click.echo(f"  {'base_url':16s}: {cur_url or '(not set)'}")
             click.echo(
                 f"  {'api_key':16s}: "
                 f"{_mask_api_key(cur_key) or '(not set)'}",
             )
-            if defn.api_key_prefix:
+            prefixes = (
+                defn.api_key_prefixes
+                if defn.api_key_prefixes
+                else [defn.api_key_prefix]
+                if defn.api_key_prefix
+                else []
+            )
+            if prefixes:
                 click.echo(
-                    f"  {'api_key_prefix':16s}: {defn.api_key_prefix}",
+                    f"  {'api_key_prefix':16s}: {', '.join(prefixes)}",
                 )
 
             extra = list(defn.extra_models)
@@ -596,8 +608,8 @@ def add_provider_cmd(
     if base_url:
         click.echo(f"  base_url: {base_url}")
     click.echo(
-        "  Run 'aiwork models add-model' to add models, "
-        "then 'aiwork models config-key' to set the API key.",
+        "  Run 'qwenpaw models add-model' to add models, "
+        "then 'qwenpaw models config-key' to set the API key.",
     )
 
 
@@ -727,8 +739,8 @@ def download_cmd(
 
     \b
     Examples:
-      aiwork models download TheBloke/Mistral-7B-Instruct-v0.2-GGUF
-      aiwork models download Qwen/Qwen2-0.5B-Instruct-GGUF --source modelscope
+      qwenpaw models download TheBloke/Mistral-7B-Instruct-v0.2-GGUF
+      qwenpaw models download Qwen/Qwen2-0.5B-Instruct-GGUF --source modelscope
     """
     local_model_manager = _get_local_model_manager()
 
@@ -774,7 +786,7 @@ def download_cmd(
     click.echo(f"  Name: {repo_id}")
     click.echo(
         "\nTo use this model, run:\n"
-        "  aiwork models set-llm  (select 'aiwork-local' provider)",
+        "  qwenpaw models set-llm  (select 'qwenpaw-local' provider)",
     )
 
 
@@ -787,7 +799,7 @@ def list_local_cmd() -> None:
 
     if not models:
         click.echo("No local models downloaded.")
-        click.echo("Use 'aiwork models download <repo_id>' to download one.")
+        click.echo("Use 'qwenpaw models download <repo_id>' to download one.")
         return
 
     click.echo(f"\n=== Local Models ({len(models)}) ===")

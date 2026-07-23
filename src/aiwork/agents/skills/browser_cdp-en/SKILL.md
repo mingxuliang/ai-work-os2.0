@@ -3,7 +3,7 @@ name: browser_cdp
 description: "Use this skill when the user explicitly wants to connect to a running Chrome browser, scan local CDP ports, specify a `cdp_port`, or share a single browser across multiple agents/tools. By default, browser_use already launches the browser using managed CDP; if the user does not want to expose browser history, cookies, or other sensitive data, recommend using `private_mode=true` instead."
 metadata:
   builtin_skill_version: "1.2"
-  aiwork:
+  qwenpaw:
     emoji: "🔌"
     requires: {}
 ---
@@ -93,7 +93,7 @@ Connect to an existing CDP endpoint:
 Characteristics:
 
 - After a successful connection, you can continue using standard operations such as `open`, `snapshot`, `click`, `type`, etc.
-- This **attaches to an external browser**, not a new process launched by AiWork
+- This **attaches to an external browser**, not a new process launched by QwenPaw
 - `stop` only disconnects — it **will not close the external browser**
 - External CDP connections are also subject to idle auto-stop management, but the auto-stop semantics for external CDP is "auto-disconnect, not close the external browser"
 
@@ -149,7 +149,7 @@ This means:
 
 CDP-related stop behavior differs depending on the type:
 
-### 1. Managed CDP launched by AiWork
+### 1. Managed CDP launched by QwenPaw
 
 For example:
 
@@ -163,7 +163,7 @@ Or:
 {"action": "start", "cdp_port": 9222}
 ```
 
-These browsers are launched and owned by AiWork. `stop` will:
+These browsers are launched and owned by QwenPaw. `stop` will:
 
 - Disconnect the Playwright / CDP connection
 - Terminate the browser process
@@ -176,7 +176,7 @@ For example:
 {"action": "connect_cdp", "cdp_url": "http://localhost:9222"}
 ```
 
-These browsers are not launched by AiWork. `stop` will only:
+These browsers are not launched by QwenPaw. `stop` will only:
 
 - Disconnect
 - **Not close the external browser process**

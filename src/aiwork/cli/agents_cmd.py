@@ -108,6 +108,7 @@ def _submit_background_task(
     to_agent: str,
     session_id: str,
     timeout: int,
+    task_timeout: Optional[float] = None,
 ) -> None:
     """Submit background task and return task_id."""
     try:
@@ -116,6 +117,7 @@ def _submit_background_task(
             request_payload,
             to_agent,
             timeout,
+            task_timeout=task_timeout,
         )
 
         task_id = result.get("task_id")
@@ -130,7 +132,7 @@ def _submit_background_task(
         click.echo()
         click.echo("💡 Don't wait - continue with other tasks!")
         click.echo("   Check status later (10-60s depending on complexity):")
-        click.echo(f"  aiwork agents chat --background --task-id {task_id}")
+        click.echo(f"  qwenpaw agents chat --background --task-id {task_id}")
 
     except Exception as e:
         click.echo(f"ERROR: Failed to submit task: {e}", err=True)
@@ -243,7 +245,7 @@ def _check_task_status(
             )
             click.echo("   Check again later (10-30s):")
             click.echo(
-                f"  aiwork agents chat --background --task-id {task_id}",
+                f"  qwenpaw agents chat --background --task-id {task_id}",
             )
 
         elif status == "pending":
@@ -254,7 +256,7 @@ def _check_task_status(
             )
             click.echo("   Check again in a few seconds:")
             click.echo(
-                f"  aiwork agents chat --background --task-id {task_id}",
+                f"  qwenpaw agents chat --background --task-id {task_id}",
             )
 
         elif status == "submitted":
@@ -265,7 +267,7 @@ def _check_task_status(
             )
             click.echo("   Check again in a few seconds:")
             click.echo(
-                f"  aiwork agents chat --background --task-id {task_id}",
+                f"  qwenpaw agents chat --background --task-id {task_id}",
             )
 
         else:
@@ -455,10 +457,10 @@ def agents_group() -> None:
 
     \b
     Examples:
-      aiwork agents chat --from-agent bot_a --to-agent bot_b --text "..."
-      aiwork agents create --name "Research Bot" --agent-id research_bot
-      aiwork agents delete research_bot
-      aiwork agents list
+      qwenpaw agents chat --from-agent bot_a --to-agent bot_b --text "..."
+      qwenpaw agents create --name "Research Bot" --agent-id research_bot
+      qwenpaw agents delete research_bot
+      qwenpaw agents list
     """
 
 
@@ -480,8 +482,8 @@ def list_agents(ctx: click.Context, base_url: Optional[str]) -> None:
 
     \b
     Examples:
-      aiwork agents list
-      aiwork agents list --base-url http://192.168.1.100:8088
+      qwenpaw agents list
+      qwenpaw agents list --base-url http://192.168.1.100:8088
 
     \b
     Output format:
@@ -667,13 +669,13 @@ def delete_cmd(
     configured agent list. The default agent cannot be deleted.
 
     \b
-    AGENT_ID  Configured agent ID, obtainable via `aiwork agents list`.
+    AGENT_ID  Configured agent ID, obtainable via `qwenpaw agents list`.
 
     \b
     Examples:
-      aiwork agents delete research
-      aiwork agents delete research --remove-workspace
-      aiwork agents delete research --yes
+      qwenpaw agents delete research
+      qwenpaw agents delete research --remove-workspace
+      qwenpaw agents delete research --yes
     """
     resolved_base_url = resolve_base_url(ctx, base_url)
 
@@ -781,6 +783,15 @@ def delete_cmd(
     help="Request timeout in seconds (default 300)",
 )
 @click.option(
+    "--task-timeout",
+    type=float,
+    default=None,
+    help=(
+        "Task execution timeout in seconds for background tasks. "
+        "Overrides server-side default stream_task_timeout."
+    ),
+)
+@click.option(
     "--json-output",
     is_flag=True,
     default=False,
@@ -802,25 +813,26 @@ def chat_cmd(
     background: bool,
     task_id: Optional[str],
     timeout: int,
+    task_timeout: Optional[float],
     json_output: bool,
     base_url: Optional[str],
 ) -> None:
     """Chat with another agent (inter-agent communication).
 
-    Sends a message to another agent via /api/agent/process endpoint
+    Sends a message to another agent via /api/console/chat endpoint
     and returns the response. By default generates unique session IDs
     to avoid concurrency issues.
 
     \b
     Background Task Mode (NEW):
       # Submit complex task
-      aiwork agents chat --background \\
+      qwenpaw agents chat --background \\
         --from-agent bot_a --to-agent bot_b \\
         --text "Analyze large dataset"
       # Output: [TASK_ID: xxx] [SESSION: xxx]
 
       # Check task status (note --to-agent is optional here)
-      aiwork agents chat --background --task-id <task_id>
+      qwenpaw agents chat --background --task-id <task_id>
       # Possible status: submitted → pending → running → finished
       # When finished, shows completed (success) or failed (error)
 
@@ -845,14 +857,14 @@ def chat_cmd(
     \b
     Examples:
       # Simple chat (new conversation each time)
-      aiwork agents chat \\
+      qwenpaw agents chat \\
         --from-agent bot_a \\
         --to-agent bot_b \\
         --text "What is the weather today?"
       # Output: [SESSION: xxx]\\nThe weather is...
 
       # Continue conversation (use session_id from previous output)
-      aiwork agents chat \\
+      qwenpaw agents chat \\
         --from-agent bot_a \\
         --to-agent bot_b \\
         --session-id "bot_a:to:bot_b:1773998835:abc123" \\
@@ -860,22 +872,22 @@ def chat_cmd(
       # Output: [SESSION: xxx] (same!)\\nTomorrow will be...
 
       # Background task (complex task)
-      aiwork agents chat --background \\
+      qwenpaw agents chat --background \\
         --from-agent bot_a \\
         --to-agent bot_b \\
         --text "Process complex data analysis"
       # Output: [TASK_ID: xxx] [SESSION: xxx]
 
       # Check background task status (note --to-agent is optional)
-      aiwork agents chat --background --task-id <task_id>
+      qwenpaw agents chat --background --task-id <task_id>
       # Possible status: submitted → pending → running → finished
       # When finished, shows completed (success) or failed (error)
 
     \b
     Prerequisites:
-      1. Use 'aiwork agents list' to discover available agents
+      1. Use 'qwenpaw agents list' to discover available agents
       2. Ensure target agent (--to-agent) is configured and running
-      3. Use 'aiwork chats list' to find existing sessions (optional)
+      3. Use 'qwenpaw chats list' to find existing sessions (optional)
 
     \b
     Returns:
@@ -936,6 +948,7 @@ def chat_cmd(
             to_agent,
             final_session_id,
             timeout,
+            task_timeout=task_timeout,
         )
         return
 

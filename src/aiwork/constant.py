@@ -3,42 +3,42 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env file from project root before reading any env vars.
-# override=True ensures .env values take precedence over any
-# pre-existing environment variables (e.g., set by IDE, Docker,
-# systemd, or shell profile) so that local configuration is
-# always respected.
+# Load .env file from project root before reading any env vars
 _env_path = Path(__file__).resolve().parent.parent.parent / ".env"
 if _env_path.exists():
-    load_dotenv(_env_path, override=True)
+    load_dotenv(_env_path)
 
 
 def _get_env(key: str, default: str = "") -> str:
-    """Look up an env var with AIWORK_ → QWENPAW_ → COPAW_ fallback.
+    """Look up an env var with AIWORK_ / QWENPAW_ / COPAW_ fallbacks.
 
-    Accepts ``AIWORK_*`` keys (preferred). When missing, mirrors QwenPaw 2.0
-    dual-read so a single ``.env.qw2`` can drive both stacks.
+    Resolution order for a ``QWENPAW_*`` key:
+    1. Exact key
+    2. ``AIWORK_`` + suffix (AIWork-OS product env)
+    3. ``COPAW_`` + suffix (legacy CoPaw)
     """
-    if key in os.environ and os.environ[key] != "":
+    if key in os.environ:
         return os.environ[key]
-    suffix = None
+    if key.startswith("QWENPAW_"):
+        suffix = key[len("QWENPAW_") :]
+        for prefix in ("AIWORK_", "COPAW_"):
+            alt = prefix + suffix
+            if alt in os.environ:
+                return os.environ[alt]
     if key.startswith("AIWORK_"):
         suffix = key[len("AIWORK_") :]
-    elif key.startswith("QWENPAW_"):
-        suffix = key[len("QWENPAW_") :]
-    elif key.startswith("COPAW_"):
-        suffix = key[len("COPAW_") :]
-    if suffix is not None:
-        for prefix in ("AIWORK_", "QWENPAW_", "COPAW_"):
-            candidate = prefix + suffix
-            if candidate in os.environ and os.environ[candidate] != "":
-                return os.environ[candidate]
+        for prefix in ("QWENPAW_", "COPAW_"):
+            alt = prefix + suffix
+            if alt in os.environ:
+                return os.environ[alt]
     return default
 
 
 class EnvVarLoader:
-    """Utility to load and parse environment variables with type safety
-    and defaults. Pass AIWORK_* keys.
+    """Load env vars with type safety.
+
+    Prefer ``AIWORK_*`` in new deployments; ``QWENPAW_*`` / ``COPAW_*``
+    remain accepted via ``_get_env`` fallbacks.
     """
 
     @staticmethod
@@ -96,20 +96,40 @@ class EnvVarLoader:
         return _get_env(env_var, default)
 
 
+CUSTOM_AGENT_STARTUP_CONCURRENCY_ENV = (
+    "QWENPAW_CUSTOM_AGENT_STARTUP_CONCURRENCY"
+)
+DEFAULT_CUSTOM_AGENT_STARTUP_CONCURRENCY = 5
+CUSTOM_AGENT_STARTUP_CONCURRENCY = EnvVarLoader.get_int(
+    CUSTOM_AGENT_STARTUP_CONCURRENCY_ENV,
+    default=DEFAULT_CUSTOM_AGENT_STARTUP_CONCURRENCY,
+    min_value=1,
+)
+
+
 # WORKING_DIR priority:
 # 1. AIWORK_WORKING_DIR / QWENPAW_WORKING_DIR / COPAW_WORKING_DIR
-# 2. Existing ~/.aiwork (enterprise data root)
+# 2. ~/.aiwork or ~/.copaw or ~/.qwenpaw if present
 # 3. Default → ~/.aiwork
-_explicit_working_dir = _get_env("AIWORK_WORKING_DIR")
+_explicit_working_dir = _get_env("AIWORK_WORKING_DIR") or _get_env(
+    "QWENPAW_WORKING_DIR",
+)
 if _explicit_working_dir:
     WORKING_DIR = Path(_explicit_working_dir).expanduser().resolve()
 else:
-    _aiwork_home = Path("~/.aiwork").expanduser()
-    WORKING_DIR = _aiwork_home.resolve()
+    _candidates = (
+        Path("~/.aiwork").expanduser(),
+        Path("~/.copaw").expanduser(),
+        Path("~/.qwenpaw").expanduser(),
+    )
+    WORKING_DIR = next(
+        (p.resolve() for p in _candidates if p.exists()),
+        Path("~/.aiwork").expanduser().resolve(),
+    )
 SECRET_DIR = (
     Path(
         EnvVarLoader.get_str(
-            "AIWORK_SECRET_DIR",
+            "QWENPAW_SECRET_DIR",
             f"{WORKING_DIR}.secret",
         ),
     )
@@ -117,7 +137,51 @@ SECRET_DIR = (
     .resolve()
 )
 
+# Env key for overriding the OS keychain account used for the master key.
+KEYRING_ACCOUNT_ENV = "QWENPAW_KEYRING_ACCOUNT"
+
 PROJECT_NAME = "AIWork"
+
+# Message metadata tags shared across agent middleware and memory managers.
+QWENPAW_MESSAGE_TAG_KEY = "qwenpaw_tag"
+AUTO_MEMORY_SEARCH_BLOCK_IDS_KEY = "auto_memory_search_block_ids"
+EXTERNAL_USER_QUERY_MESSAGE_TAG = "external_user_query"
+AUTO_CONTINUE_MESSAGE_TAG = "auto_continue"
+LOOP_CONTINUATION_MESSAGE_TAG = "loop_continuation"
+# User-role messages the runtime injects to keep a turn going. They are NOT
+# new requests: the scroll active-turn anchor (live scan + SQL floor) must
+# skip them, or the anchor jumps to the stub and the REAL request becomes
+# evictable/searchable again (the #5746 failure mode, loop-session flavor).
+SYNTHETIC_USER_MESSAGE_TAGS = frozenset(
+    {AUTO_CONTINUE_MESSAGE_TAG, LOOP_CONTINUATION_MESSAGE_TAG},
+)
+AUTO_MEMORY_SEARCH_TEXT = (
+    "I'll check memory for relevant context before answering."
+)
+AUTO_MEMORY_SEARCH_THINKING_PREFIX = (
+    "I should search long-term memory before answering."
+)
+
+# Subdirectory name inside each agent's workspace that holds cloned / imported
+# coding projects.
+# Full path = <workspace_dir> / CODING_PROJECT_SUBDIR / <name>
+CODING_PROJECT_SUBDIR = "coding_projects"
+
+
+def _resolve_docs_dir() -> Path | None:
+    """Find QwenPaw documentation directory across all install methods."""
+    _pkg_docs = Path(__file__).resolve().parent / "docs"
+    if _pkg_docs.is_dir() and any(_pkg_docs.glob("*.md")):
+        return _pkg_docs
+    _src_docs = (
+        Path(__file__).resolve().parents[2] / "website" / "public" / "docs"
+    )
+    if _src_docs.is_dir() and any(_src_docs.glob("*.md")):
+        return _src_docs
+    return None
+
+
+DOCS_DIR: Path | None = _resolve_docs_dir()
 
 # Default media directory for channels (cross-platform)
 DEFAULT_MEDIA_DIR = WORKING_DIR / "media"
@@ -125,12 +189,13 @@ DEFAULT_MEDIA_DIR = WORKING_DIR / "media"
 # Default local provider directory
 DEFAULT_LOCAL_PROVIDER_DIR = WORKING_DIR / "local_models"
 
-JOBS_FILE = EnvVarLoader.get_str("AIWORK_JOBS_FILE", "jobs.json")
+JOBS_FILE = EnvVarLoader.get_str("QWENPAW_JOBS_FILE", "jobs.json")
 
-CHATS_FILE = EnvVarLoader.get_str("AIWORK_CHATS_FILE", "chats.json")
+CHATS_FILE = EnvVarLoader.get_str("QWENPAW_CHATS_FILE", "chats.json")
 
 
-# Builtin Q&A helper profile.
+# Builtin Q&A helper profile.  agent_id keeps "QwenPaw" prefix for existing
+# workspaces and agent.json; do not rename.
 def _discover_agent_languages() -> frozenset[str]:
     md_root = Path(__file__).resolve().parent / "agents" / "md_files"
     if md_root.is_dir():
@@ -148,7 +213,7 @@ def _discover_agent_languages() -> frozenset[str]:
 
 SUPPORTED_AGENT_LANGUAGES: frozenset[str] = _discover_agent_languages()
 
-BUILTIN_QA_AGENT_ID = "AIWork_QA_Agent_0.2"
+BUILTIN_QA_AGENT_ID = "QwenPaw_QA_Agent_0.2"
 BUILTIN_QA_AGENT_NAME = "QA Agent"
 # Default skills when the builtin QA workspace is first created only.
 BUILTIN_QA_AGENT_SKILL_NAMES: tuple[str, ...] = (
@@ -156,40 +221,49 @@ BUILTIN_QA_AGENT_SKILL_NAMES: tuple[str, ...] = (
     "QA_source_index",
 )
 
-# Legacy builtin QA; may remain in config.json
-LEGACY_QA_AGENT_ID = "AiWork_QA_Agent_0.1beta1"
+# CoPaw-era builtin QA; may remain in config.json — disabled when the current
+# ``BUILTIN_QA_AGENT_ID`` profile is first created (see ``migration``), not
+# every startup, so users can re-enable this id if they want.
+LEGACY_QA_AGENT_ID = "CoPaw_QA_Agent_0.1beta1"
 
 TOKEN_USAGE_FILE = EnvVarLoader.get_str(
-    "AIWORK_TOKEN_USAGE_FILE",
+    "QWENPAW_TOKEN_USAGE_FILE",
     "token_usage.json",
 )
 
-CONFIG_FILE = EnvVarLoader.get_str("AIWORK_CONFIG_FILE", "config.json")
+CONFIG_FILE = EnvVarLoader.get_str("QWENPAW_CONFIG_FILE", "config.json")
 
-HEARTBEAT_FILE = EnvVarLoader.get_str("AIWORK_HEARTBEAT_FILE", "HEARTBEAT.md")
+HEARTBEAT_FILE = EnvVarLoader.get_str("QWENPAW_HEARTBEAT_FILE", "HEARTBEAT.md")
 HEARTBEAT_DEFAULT_EVERY = "6h"
 HEARTBEAT_DEFAULT_TARGET = "main"
+HEARTBEAT_DEFAULT_TIMEOUT_SECONDS = 300
+HEARTBEAT_MAX_TIMEOUT_SECONDS = 3600
 HEARTBEAT_TARGET_LAST = "last"
+HEARTBEAT_TARGET_INBOX = "inbox"
 
 # Debug history file for /dump_history and /load_history commands
 DEBUG_HISTORY_FILE = EnvVarLoader.get_str(
-    "AIWORK_DEBUG_HISTORY_FILE",
+    "QWENPAW_DEBUG_HISTORY_FILE",
     "debug_history.jsonl",
 )
 MAX_LOAD_HISTORY_COUNT = 10000
 
 # Env key for app log level (used by CLI and app load for reload child).
-LOG_LEVEL_ENV = "AIWORK_LOG_LEVEL"
+LOG_LEVEL_ENV = "QWENPAW_LOG_LEVEL"
+
+# Fixed desktop backend port. When set, get_stable_port() uses this port
+# instead of auto-assigning.
+QWENPAW_DESKTOP_PORT = _get_env("QWENPAW_DESKTOP_PORT")
 
 # Env to indicate running inside a container (e.g. Docker). Set to 1/true/yes.
 RUNNING_IN_CONTAINER = EnvVarLoader.get_bool(
-    "AIWORK_RUNNING_IN_CONTAINER",
+    "QWENPAW_RUNNING_IN_CONTAINER",
     False,
 )
 
 # Timeout in seconds for checking if a provider is reachable.
 MODEL_PROVIDER_CHECK_TIMEOUT = EnvVarLoader.get_float(
-    "AIWORK_MODEL_PROVIDER_CHECK_TIMEOUT",
+    "QWENPAW_MODEL_PROVIDER_CHECK_TIMEOUT",
     5.0,
     min_value=0,
     allow_inf=False,
@@ -200,7 +274,7 @@ PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH_ENV = "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH"
 
 # When True, expose /docs, /redoc, /openapi.json
 # (dev only; keep False in prod).
-DOCS_ENABLED = EnvVarLoader.get_bool("AIWORK_OPENAPI_DOCS", False)
+DOCS_ENABLED = EnvVarLoader.get_bool("QWENPAW_OPENAPI_DOCS", False)
 
 # Memory directory
 MEMORY_DIR = WORKING_DIR / "memory"
@@ -209,7 +283,7 @@ MEMORY_DIR = WORKING_DIR / "memory"
 BACKUP_DIR = (
     Path(
         EnvVarLoader.get_str(
-            "AIWORK_BACKUP_DIR",
+            "QWENPAW_BACKUP_DIR",
             f"{WORKING_DIR}.backups",
         ),
     )
@@ -217,55 +291,56 @@ BACKUP_DIR = (
     .resolve()
 )
 
-# Custom channel modules (installed via `aiwork channels install`); manager
-# loads BaseChannel subclasses from here.
-CUSTOM_CHANNELS_DIR = WORKING_DIR / "custom_channels"
 
-# Plugin directory (installed via `aiwork plugin install`)
+# Plugin directory (installed via `qwenpaw plugin install`)
 PLUGINS_DIR = WORKING_DIR / "plugins"
 
 # Local models directory
 MODELS_DIR = WORKING_DIR / "models"
 
 MEMORY_COMPACT_KEEP_RECENT = EnvVarLoader.get_int(
-    "AIWORK_MEMORY_COMPACT_KEEP_RECENT",
+    "QWENPAW_MEMORY_COMPACT_KEEP_RECENT",
     3,
     min_value=0,
 )
 
 # Memory compaction configuration
 MEMORY_COMPACT_RATIO = EnvVarLoader.get_float(
-    "AIWORK_MEMORY_COMPACT_RATIO",
+    "QWENPAW_MEMORY_COMPACT_RATIO",
     0.7,
     min_value=0,
     allow_inf=False,
 )
 
-DASHSCOPE_BASE_URL = EnvVarLoader.get_str(
-    "DASHSCOPE_BASE_URL",
-    "https://dashscope.aliyuncs.com/compatible-mode/v1",
-)
-
 # CORS configuration — comma-separated list of allowed origins for dev mode.
-# Example: AIWORK_CORS_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"
+# Example: QWENPAW_CORS_ORIGINS="http://localhost:5173,http://127.0.0.1:5173"
 # When unset, CORS middleware is not applied.
-CORS_ORIGINS = EnvVarLoader.get_str("AIWORK_CORS_ORIGINS", "").strip()
+CORS_ORIGINS = EnvVarLoader.get_str("QWENPAW_CORS_ORIGINS", "").strip()
+
+# Upload size limit (MB).  None = no limit.
+UPLOAD_MAX_SIZE_MB: int | None = (
+    int(v)
+    if (v := EnvVarLoader.get_str("QWENPAW_UPLOAD_MAX_SIZE_MB", ""))
+    .strip()
+    .isdigit()
+    else None
+)
 
 # LLM API retry configuration
 LLM_MAX_RETRIES = EnvVarLoader.get_int(
-    "AIWORK_LLM_MAX_RETRIES",
+    "QWENPAW_LLM_MAX_RETRIES",
     3,
     min_value=0,
 )
 
 LLM_BACKOFF_BASE = EnvVarLoader.get_float(
-    "AIWORK_LLM_BACKOFF_BASE",
+    "QWENPAW_LLM_BACKOFF_BASE",
     1.0,
     min_value=0.1,
 )
 
 LLM_BACKOFF_CAP = EnvVarLoader.get_float(
-    "AIWORK_LLM_BACKOFF_CAP",
+    "QWENPAW_LLM_BACKOFF_CAP",
     10.0,
     min_value=0.5,
 )
@@ -275,7 +350,7 @@ LLM_BACKOFF_CAP = EnvVarLoader.get_float(
 # the semaphore.  Tune to your API quota: start conservatively at 3-5 and
 # increase (e.g. OpenAI Tier 1 ~500 QPM allows ~25 at 3 s/call average).
 LLM_MAX_CONCURRENT = EnvVarLoader.get_int(
-    "AIWORK_LLM_MAX_CONCURRENT",
+    "QWENPAW_LLM_MAX_CONCURRENT",
     10,
     min_value=1,
 )
@@ -286,7 +361,7 @@ LLM_MAX_CONCURRENT = EnvVarLoader.get_int(
 # 0 = unlimited (disabled).
 # Examples: Anthropic Tier-1 ≈ 50 QPM; OpenAI Tier-1 ≈ 500 QPM.
 LLM_MAX_QPM = EnvVarLoader.get_int(
-    "AIWORK_LLM_MAX_QPM",
+    "QWENPAW_LLM_MAX_QPM",
     600,
     min_value=0,
 )
@@ -294,7 +369,7 @@ LLM_MAX_QPM = EnvVarLoader.get_int(
 # Default global pause duration (seconds) applied to all waiters when a 429
 # is received.  Overridden by the API's Retry-After header when present.
 LLM_RATE_LIMIT_PAUSE = EnvVarLoader.get_float(
-    "AIWORK_LLM_RATE_LIMIT_PAUSE",
+    "QWENPAW_LLM_RATE_LIMIT_PAUSE",
     5.0,
     min_value=1.0,
 )
@@ -302,7 +377,7 @@ LLM_RATE_LIMIT_PAUSE = EnvVarLoader.get_float(
 # Random jitter range (seconds) added on top of the pause remaining time so
 # concurrent waiters stagger their wake-up and avoid a new burst.
 LLM_RATE_LIMIT_JITTER = EnvVarLoader.get_float(
-    "AIWORK_LLM_RATE_LIMIT_JITTER",
+    "QWENPAW_LLM_RATE_LIMIT_JITTER",
     1.0,
     min_value=0.0,
 )
@@ -310,7 +385,7 @@ LLM_RATE_LIMIT_JITTER = EnvVarLoader.get_float(
 # Maximum time (seconds) a caller will wait for a semaphore slot before
 # giving up with a RuntimeError rather than blocking indefinitely.
 LLM_ACQUIRE_TIMEOUT = EnvVarLoader.get_float(
-    "AIWORK_LLM_ACQUIRE_TIMEOUT",
+    "QWENPAW_LLM_ACQUIRE_TIMEOUT",
     300.0,
     min_value=10.0,
 )
@@ -319,12 +394,13 @@ LLM_ACQUIRE_TIMEOUT = EnvVarLoader.get_float(
 try:
     TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS = max(
         float(
-            _get_env("AIWORK_TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS", "300"),
+            _get_env("QWENPAW_TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS", "300"),
         ),
         1.0,
     )
 except (TypeError, ValueError):
     TOOL_GUARD_APPROVAL_TIMEOUT_SECONDS = 300.0
+
 
 # Tool guard approval heartbeat interval (seconds).
 # Sends periodic heartbeat messages during approval wait to keep SSE
@@ -332,7 +408,7 @@ except (TypeError, ValueError):
 try:
     TOOL_GUARD_APPROVAL_HEARTBEAT_INTERVAL = max(
         float(
-            _get_env("AIWORK_TOOL_GUARD_APPROVAL_HEARTBEAT_INTERVAL", "15"),
+            _get_env("QWENPAW_TOOL_GUARD_APPROVAL_HEARTBEAT_INTERVAL", "15"),
         ),
         5.0,
     )
@@ -359,7 +435,7 @@ MEDIA_UNSUPPORTED_PLACEHOLDER = (
 )
 
 # ---------------------------------------------------------------------------
-# JWT + Redis + MySQL authentication (always enabled)
+# JWT + Redis + MySQL authentication (AIWork-OS enterprise)
 # ---------------------------------------------------------------------------
 
 JWT_SECRET = EnvVarLoader.get_str("AIWORK_JWT_SECRET", "")

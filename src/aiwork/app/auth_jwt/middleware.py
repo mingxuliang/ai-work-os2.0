@@ -25,6 +25,12 @@ _PUBLIC_PATHS: frozenset[str] = frozenset(
         "/api/auth/jwt/status",
         "/api/auth/jwt/register",
         "/api/auth/status",
+        # Legacy QwenPaw auth paths — allow through so the Console can fall back
+        # or proxy to JWT login when QWENPAW_AUTH_ENABLED=false.
+        "/api/auth/login",
+        "/api/auth/register",
+        "/api/auth/verify-token",
+        "/api/auth/revoke-token",
         "/api/version",
         "/api/settings/language",
         "/api/plugins",

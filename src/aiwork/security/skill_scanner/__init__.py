@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Skill security scanner for AiWork.
+Skill security scanner for QwenPaw.
 
 Scans skills for security threats before they are activated or installed.
 
@@ -49,6 +49,7 @@ from .models import (
 )
 from .scan_policy import ScanPolicy
 from ...constant import EnvVarLoader
+from ...exceptions import SkillScanError
 from .analyzers import BaseAnalyzer
 from .analyzers.pattern_analyzer import PatternAnalyzer
 from .scanner import SkillScanner
@@ -66,7 +67,6 @@ __all__ = [
     "SkillFile",
     "SkillScanner",
     "SkillScanError",
-    "SkillSandboxRequiredError",
     "ThreatCategory",
     "compute_skill_content_hash",
     "get_blocked_history",
@@ -74,7 +74,6 @@ __all__ = [
     "remove_blocked_entry",
     "is_skill_whitelisted",
     "scan_skill_directory",
-    "should_recommend_sandbox",
 ]
 
 # ---------------------------------------------------------------------------
@@ -98,9 +97,9 @@ def _load_scanner_config() -> Any:
 def _get_scan_mode(cfg: Any = None) -> str:
     """Return the effective scan mode: ``block``, ``warn``, or ``off``.
 
-    Priority: env ``AIWORK_SKILL_SCAN_MODE`` > config > default ``warn``.
+    Priority: env ``QWENPAW_SKILL_SCAN_MODE`` > config > default ``warn``.
     """
-    env = EnvVarLoader.get_str("AIWORK_SKILL_SCAN_MODE") or None
+    env = EnvVarLoader.get_str("QWENPAW_SKILL_SCAN_MODE") or None
     if env is not None:
         val = env.lower().strip()
         if val in _VALID_MODES:
@@ -175,7 +174,7 @@ def is_skill_whitelisted(
 # ---------------------------------------------------------------------------
 
 _BLOCKED_HISTORY_FILE = "skill_scanner_blocked.json"
-_WORKING_DIR_CURRENT_NAME = ".aiwork"
+_WORKING_DIR_CURRENT_NAME = ".qwenpaw"
 _WORKING_DIR_LEGACY_NAME = ".copaw"
 _history_lock = threading.Lock()
 
@@ -393,71 +392,6 @@ def _store_cached_result(
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
-
-
-def _format_finding_location(f: Finding) -> str:
-    if f.line_number is not None:
-        return f"({f.file_path}:{f.line_number})"
-    return f"({f.file_path})"
-
-
-class SkillScanError(Exception):
-    """Raised when a skill fails a security scan and blocking is enabled."""
-
-    def __init__(self, result: ScanResult) -> None:
-        self.result = result
-        findings_summary = "; ".join(
-            f"[{f.severity.value}] {f.title} " f"{_format_finding_location(f)}"
-            for f in result.findings[:5]
-        )
-        truncated = (
-            f" (and {len(result.findings) - 5} more)"
-            if len(result.findings) > 5
-            else ""
-        )
-        super().__init__(
-            f"Security scan of skill '{result.skill_name}' found "
-            f"{len(result.findings)} issue(s) "
-            f"(max severity: {result.max_severity.value}): "
-            f"{findings_summary}{truncated}",
-        )
-
-
-class SkillSandboxRequiredError(Exception):
-    """Raised when a skill requires sandbox but sandbox is disabled (strict)."""
-
-    def __init__(self, skill_name: str, message: str | None = None) -> None:
-        self.skill_name = skill_name
-        self.message = message or (
-            f"Skill '{skill_name}' requires execution sandbox but sandbox "
-            "is disabled. Enable execution sandbox or remove requires_sandbox."
-        )
-        super().__init__(self.message)
-
-
-def should_recommend_sandbox(result: ScanResult) -> bool:
-    """Return True when scan findings meet configured sandbox thresholds."""
-    if not result.findings:
-        return False
-    cfg = _load_scanner_config()
-    allowed = {
-        str(sev).strip().upper()
-        for sev in (
-            getattr(cfg, "sandbox_required_severities", None)
-            or ["HIGH", "CRITICAL"]
-        )
-    }
-    risky_categories = {
-        ThreatCategory.COMMAND_INJECTION,
-        ThreatCategory.DATA_EXFILTRATION,
-        ThreatCategory.UNAUTHORIZED_TOOL_USE,
-        ThreatCategory.RESOURCE_ABUSE,
-        ThreatCategory.MALWARE,
-    }
-    return any(
-        f.severity.value in allowed and f.category in risky_categories
-        for f in result.findings
-    )
 
 
 def scan_skill_directory(

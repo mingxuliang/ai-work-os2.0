@@ -85,14 +85,14 @@ class ModelManager:
         if memory_gb <= 8:
             models = [
                 LocalModelInfo(
-                    id="AgentScope/AiWork-Flash-2B-Q4_K_M",
-                    name="AiWork-Flash-2B-Q4_K_M",
+                    id="AgentScope/QwenPaw-Flash-2B-Q4_K_M",
+                    name="QwenPaw-Flash-2B-Q4_K_M",
                     size_bytes=1560460768,
                     source=DownloadSource.MODELSCOPE,
                 ),
                 LocalModelInfo(
-                    id="AgentScope/AiWork-Flash-2B-Q8_0",
-                    name="AiWork-Flash-2B-Q8_0",
+                    id="AgentScope/QwenPaw-Flash-2B-Q8_0",
+                    name="QwenPaw-Flash-2B-Q8_0",
                     size_bytes=2552356320,
                     source=DownloadSource.MODELSCOPE,
                 ),
@@ -100,14 +100,14 @@ class ModelManager:
         elif memory_gb <= 16:
             models = [
                 LocalModelInfo(
-                    id="AgentScope/AiWork-Flash-4B-Q4_K_M",
-                    name="AiWork-Flash-4B-Q4_K_M",
+                    id="AgentScope/QwenPaw-Flash-4B-Q4_K_M",
+                    name="QwenPaw-Flash-4B-Q4_K_M",
                     size_bytes=3066384736,
                     source=DownloadSource.MODELSCOPE,
                 ),
                 LocalModelInfo(
-                    id="AgentScope/AiWork-Flash-4B-Q8_0",
-                    name="AiWork-Flash-4B-Q8_0",
+                    id="AgentScope/QwenPaw-Flash-4B-Q8_0",
+                    name="QwenPaw-Flash-4B-Q8_0",
                     size_bytes=5157833056,
                     source=DownloadSource.MODELSCOPE,
                 ),
@@ -115,14 +115,14 @@ class ModelManager:
         else:
             models = [
                 LocalModelInfo(
-                    id="AgentScope/AiWork-Flash-9B-Q4_K_M",
-                    name="AiWork-Flash-9B-Q4_K_M",
+                    id="AgentScope/QwenPaw-Flash-9B-Q4_K_M",
+                    name="QwenPaw-Flash-9B-Q4_K_M",
                     size_bytes=5476080128,
                     source=DownloadSource.MODELSCOPE,
                 ),
                 LocalModelInfo(
-                    id="AgentScope/AiWork-Flash-9B-Q8_0",
-                    name="AiWork-Flash-9B-Q8_0",
+                    id="AgentScope/QwenPaw-Flash-9B-Q8_0",
+                    name="QwenPaw-Flash-9B-Q8_0",
                     size_bytes=10590617600,
                     source=DownloadSource.MODELSCOPE,
                 ),
@@ -212,9 +212,9 @@ class ModelManager:
             "staging_dir": str(staging_dir),
         }
         spec = ProcessDownloadTaskSpec(
-            process_name=f"aiwork-model-download-{task_id}",
+            process_name=f"qwenpaw-model-download-{task_id}",
             command=[
-                "aiwork-model-download",
+                "qwenpaw-model-download",
                 repo_id,
                 resolved_source.value,
             ],

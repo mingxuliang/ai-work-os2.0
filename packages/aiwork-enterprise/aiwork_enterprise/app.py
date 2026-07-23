@@ -16,6 +16,11 @@ from aiwork_enterprise.env import (
 apply_working_dir_bridge()
 apply_console_static_bridge()
 
+# AgentScope 2.x removes 1.x modules used by AIWork routers — inject first.
+from aiwork_enterprise.compat.agentscope_v1 import install as install_as_v1_compat
+
+install_as_v1_compat()
+
 if kernel_mode() != "qwenpaw2":
     raise RuntimeError(
         "aiwork_enterprise.app requires AIWORK_KERNEL=qwenpaw2 "

@@ -1,4 +1,4 @@
-# Start AIWork-OS Console backend on QwenPaw 2.0 kernel (Windows)
+# Start AIWork-OS (in-tree QwenPaw 2.0 fork) — Windows
 $ErrorActionPreference = "Stop"
 $Root = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $Root
@@ -16,14 +16,23 @@ if (Test-Path $EnvFile) {
 }
 
 $env:AIWORK_KERNEL = "qwenpaw2"
+$ConsoleDist = Join-Path $Root "console\dist"
+if (Test-Path (Join-Path $ConsoleDist "index.html")) {
+  $env:AIWORK_CONSOLE_STATIC_DIR = $ConsoleDist
+  $env:QWENPAW_CONSOLE_STATIC_DIR = $ConsoleDist
+  Write-Host "Using Console UI: $ConsoleDist"
+} else {
+  Write-Host "WARNING: console\dist missing — run: cd console; npm ci; npm run build"
+}
 
-Write-Host "Installing QwenPaw 2.0 kernel + enterprise overlay..."
-python -m pip install "qwenpaw==2.0.0.post3" -q
-python -m pip install -e "$Root\packages\aiwork-enterprise[kernel]" -q
-python -m pip install -e "$Root[qw2]" -q
+Write-Host "Installing editable aiwork (in-tree fork)..."
+python -m pip install -e "$Root" -q
 
-Write-Host "Running migrate helper..."
-python "$PSScriptRoot\migrate_qw2.py" --env-file $EnvFile --all
+Write-Host "Doctor check..."
+python -c "from aiwork.app.enterprise_doctor import run_doctor; raise SystemExit(run_doctor(governance_test=True))"
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "Doctor reported issues — review above before production traffic."
+}
 
-Write-Host "Starting aiwork app (QwenPaw 2.0)..."
+Write-Host "Starting aiwork app..."
 python -m aiwork app --host 127.0.0.1 --port 8088

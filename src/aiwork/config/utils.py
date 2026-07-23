@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import plistlib
+import shlex
 import shutil
 import socket
 import subprocess
@@ -50,65 +51,24 @@ _agent_config_lock = threading.Lock()
 
 
 def _normalize_working_dir_bound_paths(data: object) -> object:
-    """Normalize legacy working-dir-bound paths to current WORKING_DIR.
+    """Normalize legacy ~/.copaw-bound paths to current WORKING_DIR.
 
-    This keeps AIWORK_WORKING_DIR effective even if user config files contain
-    older hard-coded paths like "~/.qwenpaw/media",
-    "/Users/x/.qwenpaw/workspaces/...", or host-side paths like
-    "/home/user/.aiwork/workspaces/..." that need remapping inside a container.
-
-    Handles these legacy root patterns:
-    1. ~/.qwenpaw tilde form and expanded absolute path
-    2. ~/.aiwork tilde form and expanded absolute path (only when WORKING_DIR differs)
-    3. Pattern-based fallback: paths containing /workspaces/ or /.aiwork/ that
-       are outside the current WORKING_DIR (catches any host-side absolute path
-       regardless of the host user's HOME directory)
+    This keeps QWENPAW_WORKING_DIR effective even if user config files contain
+    older hard-coded paths like "~/.copaw/media" or
+    "/Users/x/.copaw/workspaces/...".
+    Only rewrites known working-dir-bound keys.
     """
-    legacy_root_qwenpaw_tilde = "~/.qwenpaw"
-    legacy_root_qwenpaw_abs = str(
-        Path(legacy_root_qwenpaw_tilde).expanduser().resolve(),
-    )
-    # Also treat ~/.aiwork as a legacy root when WORKING_DIR differs
-    legacy_root_aiwork_tilde = "~/.aiwork"
-    legacy_root_aiwork_abs = str(
-        Path(legacy_root_aiwork_tilde).expanduser().resolve(),
-    )
+    legacy_root_tilde = "~/.copaw"
+    legacy_root_abs = str(Path(legacy_root_tilde).expanduser().resolve())
     new_root_abs = str(WORKING_DIR)
-    # Only rewrite ~/.aiwork paths when WORKING_DIR is actually different
-    # (e.g. in Docker where AIWORK_WORKING_DIR=/app/working)
-    _aiwork_needs_rewrite = new_root_abs != legacy_root_aiwork_abs
 
     def _rewrite_path_value(v: object) -> object:
         if not isinstance(v, str) or not v:
             return v
-        # 1) Legacy ~/.qwenpaw tilde form
-        if v.startswith(legacy_root_qwenpaw_tilde):
-            return new_root_abs + v[len(legacy_root_qwenpaw_tilde) :]
-        # 2) Legacy ~/.qwenpaw expanded absolute path
-        if v.startswith(legacy_root_qwenpaw_abs):
-            return new_root_abs + v[len(legacy_root_qwenpaw_abs) :]
-        # 3) ~/.aiwork tilde form (only when WORKING_DIR differs from ~/.aiwork)
-        if _aiwork_needs_rewrite and v.startswith(legacy_root_aiwork_tilde):
-            return new_root_abs + v[len(legacy_root_aiwork_tilde) :]
-        # 4) ~/.aiwork expanded absolute path (only when WORKING_DIR differs)
-        if _aiwork_needs_rewrite and v.startswith(legacy_root_aiwork_abs):
-            return new_root_abs + v[len(legacy_root_aiwork_abs) :]
-        # 5) Pattern-based fallback for Docker: detect paths that look like
-        #    working-dir-bound but use a different base (e.g. host-side
-        #    /home/user/.aiwork/workspaces/xxx inside a container where
-        #    WORKING_DIR=/app/working). This catches ANY host user's path
-        #    without needing to know the host HOME directory.
-        if _aiwork_needs_rewrite and not v.startswith(new_root_abs):
-            # /workspaces/{id} pattern → re-base to current WORKING_DIR
-            ws_marker = "/workspaces/"
-            ws_idx = v.find(ws_marker)
-            if ws_idx > 0:
-                return new_root_abs + v[ws_idx:]
-            # /.aiwork/ pattern → re-base to current WORKING_DIR
-            aiwork_marker = "/.aiwork/"
-            aw_idx = v.find(aiwork_marker)
-            if aw_idx > 0:
-                return new_root_abs + v[aw_idx + len("/.aiwork") - 1:]
+        if v.startswith(legacy_root_tilde):
+            return new_root_abs + v[len(legacy_root_tilde) :]
+        if v.startswith(legacy_root_abs):
+            return new_root_abs + v[len(legacy_root_abs) :]
         return v
 
     def _walk(obj: object, key: str | None = None) -> object:
@@ -319,6 +279,31 @@ def _get_win32_default_browser() -> Tuple[Optional[str], Optional[str]]:
     return (None, None)
 
 
+def _exec_executable_token(exec_value: str) -> Optional[str]:
+    """Extract the real executable from a .desktop ``Exec=`` value.
+
+    Handles the common ``env VAR=val /path/to/browser %U`` form (seen with
+    IME setups, e.g. ``Exec=env GTK_IM_MODULE=ibus /usr/bin/google-chrome``)
+    by skipping a leading ``env`` wrapper and any ``VAR=VALUE`` assignments,
+    so the browser binary is returned instead of ``env``.
+    """
+    try:
+        tokens = shlex.split(exec_value)
+    except ValueError:
+        tokens = exec_value.split()
+    idx = 0
+    if idx < len(tokens) and Path(tokens[idx]).name == "env":
+        idx += 1
+        # Skip VAR=VALUE assignments that follow the `env` wrapper.
+        while (
+            idx < len(tokens)
+            and "=" in tokens[idx]
+            and not tokens[idx].startswith("/")
+        ):
+            idx += 1
+    return tokens[idx] if idx < len(tokens) else None
+
+
 def _get_linux_default_browser() -> Tuple[Optional[str], Optional[str]]:
     """Return (browser_kind, executable_path) for Linux default HTTP
     handler.
@@ -348,7 +333,11 @@ def _get_linux_default_browser() -> Tuple[Optional[str], Optional[str]]:
             with open(path, encoding="utf-8") as f:
                 for line in f:
                     if line.strip().startswith("Exec="):
-                        exe = line.split("=", 1)[1].strip().split()[0]
+                        exe = _exec_executable_token(
+                            line.split("=", 1)[1].strip(),
+                        )
+                        if not exe:
+                            break
                         if exe.startswith("/") and Path(exe).is_file():
                             return _linux_desktop_to_kind_and_path(exe)
                         for p in ["/usr/bin", "/usr/local/bin"]:
@@ -394,56 +383,38 @@ def get_system_default_browser() -> Tuple[Optional[str], Optional[str]]:
 
 def get_available_channels() -> Tuple[str, ...]:
     """Return channel keys enabled for this run (built-in + entry point
-    aiwork.channels), filtered by AIWORK_ENABLED_CHANNELS or
-    AIWORK_DISABLED_CHANNELS when set.
+    aiwork.channels), filtered by QWENPAW_ENABLED_CHANNELS or
+    QWENPAW_DISABLED_CHANNELS when set.
 
-    * AIWORK_ENABLED_CHANNELS — whitelist (only these channels are active).
-    * AIWORK_DISABLED_CHANNELS — blacklist (all channels *except* these).
-    * If both are set, AIWORK_ENABLED_CHANNELS takes precedence.
+    * QWENPAW_ENABLED_CHANNELS — whitelist (only these channels are active).
+    * QWENPAW_DISABLED_CHANNELS — blacklist (all channels *except* these).
+    * If both are set, QWENPAW_ENABLED_CHANNELS takes precedence.
     * If neither is set, all discovered channels are returned.
     """
     from ..app.channels.registry import get_channel_registry
 
-    _logger = logging.getLogger(__name__)
-
     registry = get_channel_registry()
     all_keys = tuple(registry.keys())
 
-    raw_enabled = EnvVarLoader.get_str("AIWORK_ENABLED_CHANNELS", "").strip()
+    raw_enabled = EnvVarLoader.get_str("QWENPAW_ENABLED_CHANNELS", "").strip()
     if raw_enabled:
         enabled = {ch.strip() for ch in raw_enabled.split(",") if ch.strip()}
-        filtered = tuple(k for k in all_keys if k in enabled)
-        if not filtered:
-            _logger.warning(
-                "AIWORK_ENABLED_CHANNELS=%r did not match any registered "
-                "channel keys %r. No channels will be available.",
-                raw_enabled,
-                all_keys,
-            )
-        return filtered
+        return tuple(k for k in all_keys if k in enabled) or all_keys
 
     raw_disabled = EnvVarLoader.get_str(
-        "AIWORK_DISABLED_CHANNELS",
+        "QWENPAW_DISABLED_CHANNELS",
         "",
     ).strip()
     if raw_disabled:
         disabled = {ch.strip() for ch in raw_disabled.split(",") if ch.strip()}
-        filtered = tuple(k for k in all_keys if k not in disabled)
-        if not filtered:
-            _logger.warning(
-                "AIWORK_DISABLED_CHANNELS=%r excluded all registered "
-                "channel keys %r. No channels will be available.",
-                raw_disabled,
-                all_keys,
-            )
-        return filtered
+        return tuple(k for k in all_keys if k not in disabled) or all_keys
 
     return all_keys
 
 
 def is_running_in_container() -> bool:
     """Return True if running inside a container (Docker/Kubernetes).
-    Prefer env AIWORK_RUNNING_IN_CONTAINER (1/true/yes) at call time so
+    Prefer env QWENPAW_RUNNING_IN_CONTAINER (1/true/yes) at call time so
     supervisord child gets correct value; else check /.dockerenv and cgroup.
     """
     if RUNNING_IN_CONTAINER:
@@ -558,6 +529,52 @@ def _read_config_data(config_path: Path) -> Optional[dict]:
     return data
 
 
+def _rewrite_legacy_weixin_key_on_disk(config_path: Path) -> None:
+    """One-shot migration: rewrite ``channels.weixin`` -> ``channels.wechat``.
+
+    Re-reads the raw file to detect whether the legacy key is still
+    present on disk (in-memory data may already have been normalized by
+    the model validator). When detected, backs up the original file and
+    writes the migrated content back so subsequent loads see the
+    canonical key directly.
+    """
+    try:
+        with open(config_path, "r", encoding="utf-8") as file:
+            raw = file.read()
+        raw_data = json.loads(raw)
+    except (OSError, json.JSONDecodeError):
+        return
+    if not isinstance(raw_data, dict):
+        return
+    channels = raw_data.get("channels")
+    if not isinstance(channels, dict) or "weixin" not in channels:
+        return
+
+    legacy = channels.pop("weixin")
+    if "wechat" not in channels:
+        channels["wechat"] = legacy
+
+    try:
+        backup_path = config_path.with_suffix(
+            f".{uuid.uuid4().hex[:8]}.weixin-migrate.bak",
+        )
+        shutil.copy2(config_path, backup_path)
+        with open(config_path, "w", encoding="utf-8") as file:
+            json.dump(raw_data, file, indent=2, ensure_ascii=False)
+        logger.warning(
+            "Migrated legacy 'channels.weixin' -> 'channels.wechat' in %s "
+            "(backup: %s)",
+            config_path,
+            backup_path,
+        )
+    except OSError as exc:
+        logger.error(
+            "Failed to migrate legacy 'weixin' key in %s: %s",
+            config_path,
+            exc,
+        )
+
+
 def _load_and_validate_config(
     config_path: Path,
     data: dict,
@@ -573,7 +590,7 @@ def _load_and_validate_config(
             la["port"] = data.get("last_api_port")
 
     try:
-        return Config.model_validate(data)
+        config = Config.model_validate(data)
     except ValidationError as exc:
         fixed_any = False
         for err in exc.errors():
@@ -583,15 +600,17 @@ def _load_and_validate_config(
         if not fixed_any:
             _backup_config_file(config_path, "validation error")
             return Config()
+        try:
+            config = Config.model_validate(data)
+        except ValidationError:
+            _backup_config_file(
+                config_path,
+                "validation error after field removal",
+            )
+            return Config()
 
-    try:
-        return Config.model_validate(data)
-    except ValidationError:
-        _backup_config_file(
-            config_path,
-            "validation error after field removal",
-        )
-        return Config()
+    _rewrite_legacy_weixin_key_on_disk(config_path)
+    return config
 
 
 def load_config(config_path: Optional[Path] = None) -> Config:
@@ -731,13 +750,16 @@ def get_dream_cron(agent_id: Optional[str] = None) -> str:
                   root config.agents.defaults (legacy behavior).
 
     Returns:
-        str: Cron expression for dream-based memory optimization job, or empty
-             string if disabled.
+        str: Cron expression for dream-based memory optimization job, or an
+             empty string if disabled.
     """
     if agent_id is not None:
         try:
             agent_config = load_agent_config(agent_id)
-            return agent_config.running.get_active_memory_config().dream_cron
+            memory_config = agent_config.running.reme_light_memory_config
+            if not getattr(memory_config, "dream_cron_enabled", True):
+                return ""
+            return memory_config.dream_cron
         except Exception:
             return ""
     # Legacy: return empty string if no agent_id provided
@@ -781,18 +803,50 @@ def update_last_dispatch(
     save_config(config)
 
 
+# In-process cache for the current server's API address.
+# Desktop mode uses a random port, and config.json on disk may be
+# overwritten by migrations or file-lock races.  The in-process cache
+# guarantees that tools running in the same process always resolve the
+# correct address without depending on disk I/O.
+#
+# Thread safety: the cache is an immutable tuple assigned atomically under
+# CPython's GIL.  Only the server startup thread calls write_last_api(),
+# so no lock is required for the current single-writer / multi-reader
+# pattern.  If concurrent writers are ever introduced, wrap both
+# read/write in a threading.Lock.
+_runtime_last_api: Optional[Tuple[str, int]] = None
+
+
 def read_last_api() -> Optional[Tuple[str, int]]:
-    """Read last API host/port from config (via config load/save)."""
+    """Read last API host/port, preferring the in-process cache.
+
+    Priority:
+    1. In-process runtime cache (set by ``write_last_api`` in this process)
+    2. Persisted value from config.json on disk
+    """
+    if _runtime_last_api is not None:
+        logger.debug(
+            "read_last_api: using in-process cache %s:%s",
+            _runtime_last_api[0],
+            _runtime_last_api[1],
+        )
+        return _runtime_last_api
+
     config = load_config()
     host = config.last_api.host
     port = config.last_api.port
     if not host or port is None:
+        logger.debug("read_last_api: no value in cache or config")
         return None
+    logger.debug("read_last_api: disk fallback %s:%s", host, port)
     return host, port
 
 
 def write_last_api(host: str, port: int) -> None:
-    """Write last API host/port to config (via config load/save)."""
+    """Write last API host/port to both in-process cache and config file."""
+    global _runtime_last_api
+    _runtime_last_api = (host, port)
+
     config = load_config()
     config.last_api = LastApiConfig(host=host, port=port)
     save_config(config)
@@ -816,11 +870,36 @@ def get_plugins_dir() -> Path:
     return PLUGINS_DIR
 
 
-def is_aiwork_running() -> bool:
-    """Check if AiWork is currently running by checking API availability.
+def get_agent_dirs() -> list[Path]:
+    """Return list of all agent directories from config.
+
+    Returns canonical workspace dirs from config.agents.profiles,
+    not by scanning filesystem (which can miss custom paths or
+    include stale directories).
 
     Returns:
-        True if AiWork is running, False otherwise
+        List of Path objects for each agent's workspace directory
+    """
+    config = load_config()
+
+    agent_dirs = []
+    if config.agents and config.agents.profiles:
+        for profile in config.agents.profiles.values():
+            workspace_dir = Path(profile.workspace_dir)
+            if (
+                workspace_dir.exists()
+                and (workspace_dir / "agent.json").exists()
+            ):
+                agent_dirs.append(workspace_dir)
+
+    return agent_dirs
+
+
+def is_qwenpaw_running() -> bool:
+    """Check if QwenPaw is currently running by checking API availability.
+
+    Returns:
+        True if QwenPaw is running, False otherwise
     """
     try:
         # Read last API host/port
@@ -844,3 +923,41 @@ def is_aiwork_running() -> bool:
 
     except Exception:
         return False
+
+
+def sanitize_mcp_clients(
+    data: dict,
+    agent_id: str,
+) -> None:
+    """Drop invalid MCP client entries in-place.
+
+    Iterates over ``data["mcp"]["clients"]`` and removes
+    entries that fail ``MCPClientConfig`` validation so that
+    one broken MCP client does not prevent the whole agent
+    from loading.
+    """
+    from .config import MCPClientConfig
+
+    mcp = data.get("mcp")
+    if not isinstance(mcp, dict):
+        return
+    clients = mcp.get("clients")
+    if not isinstance(clients, dict):
+        return
+    bad_keys: list[str] = []
+    for key, val in clients.items():
+        if not isinstance(val, dict):
+            bad_keys.append(key)
+            continue
+        try:
+            MCPClientConfig.model_validate(
+                {**val, "name": key},
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                f"Agent '{agent_id}': skipping invalid "
+                f"MCP client '{key}': {exc}",
+            )
+            bad_keys.append(key)
+    for key in bad_keys:
+        del clients[key]

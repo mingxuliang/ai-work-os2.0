@@ -3,7 +3,7 @@ name: browser_visible
 description: "Use this skill when the user needs to control the browser launch mode for browser_use. By default, browser_use launches the local Chrome/Chromium using managed CDP; `headed` controls whether the window is visible, and `private_mode` controls whether CDP is disabled in favor of Playwright."
 metadata:
   builtin_skill_version: "1.2"
-  aiwork:
+  qwenpaw:
     emoji: "🖥️"
     requires: {}
 ---

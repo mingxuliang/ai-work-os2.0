@@ -59,7 +59,22 @@ export default defineConfig(({ mode }) => {
     resolve: {
       alias: {
         "@": path.resolve(__dirname, "./src"),
+        // Force single copies so nested deps (@agentscope-ai/chat →
+        // use-context-selector) don't get a broken/empty scheduler or a
+        // second React instance (runtime: "X is not a function").
+        react: path.resolve(__dirname, "node_modules/react"),
+        "react-dom": path.resolve(__dirname, "node_modules/react-dom"),
+        "react/jsx-runtime": path.resolve(
+          __dirname,
+          "node_modules/react/jsx-runtime.js",
+        ),
+        "react/jsx-dev-runtime": path.resolve(
+          __dirname,
+          "node_modules/react/jsx-dev-runtime.js",
+        ),
+        scheduler: path.resolve(__dirname, "node_modules/scheduler"),
       },
+      dedupe: ["react", "react-dom", "scheduler"],
     },
     server: {
       host: "0.0.0.0",
@@ -163,7 +178,7 @@ export default defineConfig(({ mode }) => {
       rollupOptions: {
         output: {
           manualChunks(id) {
-            // React core
+            // React core — safe, no cycles with UI stack
             if (
               id.includes("node_modules/react/") ||
               id.includes("node_modules/react-dom/") ||
@@ -173,21 +188,8 @@ export default defineConfig(({ mode }) => {
               return "react-vendor";
             }
 
-            // Mermaid — very large (~2 MB), isolate so other pages don't wait for it
-            if (id.includes("node_modules/mermaid/")) {
-              return "mermaid-vendor";
-            }
-
-            // Charts / data-viz — heavy, only needed in stats/charts pages
-            if (
-              id.includes("node_modules/recharts/") ||
-              id.includes("node_modules/@ant-design/plots/") ||
-              id.includes("node_modules/d3") ||
-              id.includes("node_modules/@visx/")
-            ) {
-              return "charts-vendor";
-            }
-
+            // Charts / data-viz stay with UI stack — @ant-design/plots would
+            // otherwise cycle with ui-vendor (antd / agentscope).
             // Document preview — only needed when user opens a doc
             if (
               id.includes("node_modules/docx-preview/") ||
@@ -204,50 +206,30 @@ export default defineConfig(({ mode }) => {
               return "fx-vendor";
             }
 
-            // Markdown rendering (includes @ant-design/x-markdown because it
-            // depends on react-markdown and must stay in the same chunk)
+            // UI stack MUST be one chunk. Splitting antd / @ant-design /
+            // @agentscope-ai / markdown / mermaid / charts created circular
+            // chunks; agentscope-chat then called createGlobalStyle before it
+            // was initialized → runtime "Le is not a function" white screen.
             if (
+              id.includes("node_modules/antd/") ||
+              id.includes("node_modules/antd-style/") ||
+              id.includes("node_modules/@ant-design/") ||
+              id.includes("node_modules/rc-") ||
+              id.includes("node_modules/@agentscope-ai/") ||
               id.includes("node_modules/react-markdown/") ||
-              id.includes("node_modules/@ant-design/x-markdown/") ||
               id.includes("node_modules/remark-gfm/") ||
               id.includes("node_modules/rehype") ||
               id.includes("node_modules/remark") ||
               id.includes("node_modules/unified/") ||
               id.includes("node_modules/mdast") ||
               id.includes("node_modules/hast") ||
-              id.includes("node_modules/micromark")
+              id.includes("node_modules/micromark") ||
+              id.includes("node_modules/mermaid/") ||
+              id.includes("node_modules/recharts/") ||
+              id.includes("node_modules/d3") ||
+              id.includes("node_modules/@visx/")
             ) {
-              return "markdown-vendor";
-            }
-
-            // AgentScope chat runtime — large (~2.3 MB), split from UI design system
-            if (id.includes("node_modules/@agentscope-ai/chat/")) {
-              return "agentscope-chat";
-            }
-
-            // AgentScope icons — separate to allow independent caching
-            if (id.includes("node_modules/@agentscope-ai/icons/")) {
-              return "agentscope-icons";
-            }
-
-            // AgentScope design + remaining @agentscope-ai packages
-            if (id.includes("node_modules/@agentscope-ai/")) {
-              return "agentscope-design";
-            }
-
-            // Ant Design core — the foundation, separated from AgentScope
-            if (
-              id.includes("node_modules/antd/") ||
-              id.includes("node_modules/antd-style/") ||
-              id.includes("node_modules/@ant-design/icons/") ||
-              id.includes("node_modules/rc-")
-            ) {
-              return "antd-vendor";
-            }
-
-            // Remaining @ant-design packages (x, x-markdown handled above)
-            if (id.includes("node_modules/@ant-design/")) {
-              return "antd-extra";
+              return "ui-vendor";
             }
 
             // i18n

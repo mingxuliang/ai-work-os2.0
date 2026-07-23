@@ -24,7 +24,6 @@ from typing import Any
 from ...constant import EnvVarLoader
 from .guardians import BaseToolGuardian
 from .guardians.file_guardian import FilePathToolGuardian
-from .guardians.path_jail_guardian import PathJailGuardian
 from .guardians.rule_guardian import RuleBasedToolGuardian
 from .guardians.shell_evasion_guardian import ShellEvasionGuardian
 from .models import ToolGuardResult
@@ -39,7 +38,7 @@ def _guard_enabled() -> bool:
 
     Priority: env var > config.json > default (True).
     """
-    env_val = EnvVarLoader.get_str("AIWORK_TOOL_GUARD_ENABLED") or None
+    env_val = EnvVarLoader.get_str("QWENPAW_TOOL_GUARD_ENABLED") or None
     if env_val is not None:
         return env_val.lower() in _TRUE_STRINGS
 
@@ -61,7 +60,7 @@ class ToolGuardEngine:
         Explicit list of guardians.  If *None* the default set
         (rule-based) is used.
     enabled:
-        Override ``AIWORK_TOOL_GUARD_ENABLED`` env var.
+        Override ``QWENPAW_TOOL_GUARD_ENABLED`` env var.
     """
 
     def __init__(
@@ -92,13 +91,6 @@ class ToolGuardEngine:
         except Exception as exc:  # pragma: no cover
             logger.warning(
                 "Failed to initialise FilePathToolGuardian: %s",
-                exc,
-            )
-        try:
-            guardians.append(PathJailGuardian())
-        except Exception as exc:  # pragma: no cover
-            logger.warning(
-                "Failed to initialise PathJailGuardian: %s",
                 exc,
             )
         try:
@@ -154,12 +146,22 @@ class ToolGuardEngine:
         """Tools unconditionally denied (no approval offered)."""
         return self._denied_tools
 
+    @property
+    def auto_denied_rules(self) -> set[str]:
+        """Rule IDs that unconditionally deny matched tool calls."""
+        return self._auto_denied_rules
+
     def _reload_tool_sets(self) -> None:
-        """Refresh guarded and denied tool sets from config."""
-        from .utils import resolve_denied_tools, resolve_guarded_tools
+        """Refresh guarded/denied tool and rule sets from config."""
+        from .utils import (
+            resolve_auto_denied_rules,
+            resolve_denied_tools,
+            resolve_guarded_tools,
+        )
 
         self._guarded_tools: set[str] | None = resolve_guarded_tools()
         self._denied_tools: set[str] = resolve_denied_tools()
+        self._auto_denied_rules: set[str] = resolve_auto_denied_rules()
 
     def reload_rules(self) -> None:
         """Reload guardian rules and refresh guarded/denied tool sets."""
@@ -171,6 +173,19 @@ class ToolGuardEngine:
     def is_denied(self, tool_name: str) -> bool:
         """``True`` when *tool_name* is unconditionally denied."""
         return tool_name in self._denied_tools
+
+    def should_auto_deny_result(self, result: ToolGuardResult | None) -> bool:
+        """``True`` when guard findings hit any configured auto-deny rule."""
+        if (
+            result is None
+            or not result.findings
+            or not self._auto_denied_rules
+        ):
+            return False
+        return any(
+            finding.rule_id in self._auto_denied_rules
+            for finding in result.findings
+        )
 
     def is_guarded(self, tool_name: str) -> bool:
         """``True`` when *tool_name* falls within the guard scope."""

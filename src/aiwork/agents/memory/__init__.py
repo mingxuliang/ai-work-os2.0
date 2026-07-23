@@ -1,12 +1,17 @@
 # -*- coding: utf-8 -*-
-"""Memory management module for AiWork agents."""
+"""Memory management module for QwenPaw agents."""
 
 from typing import TYPE_CHECKING
 
-from .reme_light.agent_md_manager import AgentMdManager
+from .agent_md_manager import AgentMdManager
 from .base_memory_manager import BaseMemoryManager
-from .mem0.mem0_memory_manager import Mem0MemoryManager
-from .reme_light.reme_light_memory_manager import ReMeLightMemoryManager
+from .reme_light_memory_manager import ReMeLightMemoryManager
+from .adbpg_memory_manager import (
+    ADBPGMemoryManager,
+)  # registers "adbpg" backend
+from .dummy import (
+    NoopMemoryManager,
+)  # registers "none" backend
 
 # Proactive symbols are lazily re-exported via __getattr__ at runtime to
 # avoid circular imports (proactive -> react_agent -> agents.memory loop).
@@ -28,8 +33,9 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = [
     "AgentMdManager",
     "BaseMemoryManager",
-    "Mem0MemoryManager",
     "ReMeLightMemoryManager",
+    "ADBPGMemoryManager",
+    "NoopMemoryManager",
     # proactive symbols resolved lazily at runtime via __getattr__
     "ProactiveConfig",
     "ProactiveTask",

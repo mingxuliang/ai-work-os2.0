@@ -111,3 +111,10 @@ src/.hypothesis/
 
 # Worktrees
 .worktrees/
+
+# QwenPaw 2.0 fork merge artifacts
+vendor/
+src/_legacy_aiwork_1x/
+auth_routes.txt
+*.docx
+src/aiwork/**/__pycache__/

@@ -6,13 +6,13 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from agentscope_runtime.engine.schemas.agent_schemas import (
+from fastapi import WebSocketDisconnect
+
+from aiwork.schemas import (
     ContentType,
     MessageType,
     RunStatus,
 )
-
-from fastapi import WebSocketDisconnect
 
 from .session import CallSessionManager
 
@@ -130,19 +130,6 @@ class ConversationRelayHandler:
         if not user_text.strip():
             return
 
-        # --- Prompt injection guard ---
-        from ....security.prompt_guard import PromptGuard, PromptInjectionError
-        try:
-            PromptGuard.scan_or_raise(user_text)
-        except PromptInjectionError:
-            logger.warning(
-                "Prompt injection blocked in voice: call_sid=%s",
-                self.call_sid,
-            )
-            await self._send_error("I'm unable to process that request.")
-            return
-        # --- End guard ---
-
         logger.info(
             "Voice prompt: call_sid=%s text=%s",
             self.call_sid,
@@ -176,7 +163,7 @@ class ConversationRelayHandler:
 
     def _build_agent_request(self, text: str) -> Any:
         """Build an AgentRequest from user speech text."""
-        from agentscope_runtime.engine.schemas.agent_schemas import (
+        from aiwork.schemas import (
             AgentRequest,
             Message,
             Role,

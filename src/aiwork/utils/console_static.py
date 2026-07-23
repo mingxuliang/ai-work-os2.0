@@ -9,7 +9,7 @@ from ..constant import EnvVarLoader
 
 # Primary env key (``COPAW_CONSOLE_STATIC_DIR`` is accepted as a legacy
 # fallback via :class:`~aiwork.constant.EnvVarLoader`).
-CONSOLE_STATIC_ENV = "AIWORK_CONSOLE_STATIC_DIR"
+CONSOLE_STATIC_ENV = "QWENPAW_CONSOLE_STATIC_DIR"
 
 
 def resolve_console_static_dir() -> str:
@@ -18,7 +18,7 @@ def resolve_console_static_dir() -> str:
     Resolution order matches :mod:`aiwork.app._app`: env override, package
     ``aiwork/console``, repo ``console/dist``, then cwd fallbacks.
     """
-    static_dir = EnvVarLoader.get_str("AIWORK_CONSOLE_STATIC_DIR")
+    static_dir = EnvVarLoader.get_str("QWENPAW_CONSOLE_STATIC_DIR")
     if static_dir:
         return static_dir
 
@@ -41,11 +41,11 @@ def resolve_console_static_dir() -> str:
     return str(cwd / "console" / "dist")
 
 
-def find_aiwork_source_repo_root() -> Path | None:
+def find_qwenpaw_source_repo_root() -> Path | None:
     """Return the git checkout root if this Python
-    is running from AiWork source.
+    is running from QwenPaw source.
 
-    Looks upward from :mod:`aiwork` for ``console/package.json``,
+    Looks upward from :mod:`qwenpaw` for ``console/package.json``,
     ``console/package-lock.json``, and ``src/aiwork/``
     (bundled static target).
     Returns ``None`` for a normal pip/wheel install.

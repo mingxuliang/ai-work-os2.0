@@ -7,9 +7,46 @@ import os
 import click
 import uvicorn
 
-from ..constant import LOG_LEVEL_ENV
+from ..app.auth import is_auth_enabled
 from ..config.utils import write_last_api
-from ..utils.logging import setup_logger, SuppressPathAccessLogFilter
+from ..constant import LOG_LEVEL_ENV
+from ..utils.http import is_loopback_host
+from ..utils.logging import SuppressPathAccessLogFilter, setup_logger
+from ..utils.platform import auto_disable_sandbox_on_windows
+
+logger = logging.getLogger(__name__)
+
+
+def _format_bind_address(host: str, port: int) -> str:
+    """Return a readable bind address for startup logs."""
+    normalized_host = host.strip()
+    if ":" in normalized_host and not normalized_host.startswith("["):
+        normalized_host = f"[{normalized_host}]"
+    return f"{normalized_host}:{port}"
+
+
+def _warn_if_auth_off_non_loopback_bind(host: str, port: int) -> None:
+    """Warn when QwenPaw is reachable beyond loopback without auth."""
+    if is_auth_enabled() or is_loopback_host(host):
+        return
+
+    bind_address = _format_bind_address(host, port)
+    warning = f"""
+============================================================
+SECURITY NOTICE: QwenPaw is bound to {bind_address} without authentication.
+
+Anyone who can reach this address may access QwenPaw APIs without login.
+
+Recommended:
+  - Restrict access to a trusted network interface or protected environment.
+  - Enable authentication with QWENPAW_AUTH_ENABLED=true if untrusted users or
+    processes may reach this address.
+============================================================
+""".strip()
+    if logger.isEnabledFor(logging.WARNING):
+        logger.warning("\n%s", warning)
+    else:
+        click.echo(warning, err=True)
 
 
 @click.command("app")
@@ -40,7 +77,7 @@ from ..utils.logging import setup_logger, SuppressPathAccessLogFilter
 @click.option(
     "--hide-access-paths",
     multiple=True,
-    default=("/console/push-messages",),
+    default=("/console/push-messages", "/console/inbox/events"),
     show_default=True,
     help="Path substrings to hide from uvicorn access log (repeatable).",
 )
@@ -50,7 +87,7 @@ from ..utils.logging import setup_logger, SuppressPathAccessLogFilter
     default=None,
     help="[DEPRECATED] Number of worker processes. "
     "This option is deprecated and will be removed in a future version. "
-    "AiWork always uses 1 worker.",
+    "QwenPaw always uses 1 worker.",
 )
 def app_cmd(
     host: str,
@@ -60,7 +97,15 @@ def app_cmd(
     log_level: str,
     hide_access_paths: tuple[str, ...],
 ) -> None:
-    """Run AiWork FastAPI app."""
+    """Run QwenPaw FastAPI app."""
+    # NOTE: the server intentionally runs UNPRIVILEGED. The Windows
+    # restricted-token sandbox no longer requires the whole server to be
+    # elevated (which PR #5931 forced via ShellExecuteW("runas"), breaking
+    # headless / VBS launchers with a surprise UAC prompt and a detached,
+    # un-closable window). If sandbox is enabled but the process is not
+    # admin, _auto_disable_sandbox_on_windows() below will flip the switch
+    # off before the server starts.
+
     # Handle deprecated --workers parameter
     if workers is not None:
         click.echo(
@@ -69,7 +114,7 @@ def app_cmd(
             err=True,
         )
         click.echo(
-            "   AiWork always uses 1 worker for stability. "
+            "   QwenPaw always uses 1 worker for stability. "
             "Your specified value will be ignored.",
             err=True,
         )
@@ -85,9 +130,9 @@ def app_cmd(
     # Signal reload mode to browser_control.py for Windows
     # compatibility: use sync Playwright + ThreadPool only when reload=True
     if reload:
-        os.environ["AIWORK_RELOAD_MODE"] = "1"
+        os.environ["QWENPAW_RELOAD_MODE"] = "1"
     else:
-        os.environ.pop("AIWORK_RELOAD_MODE", None)
+        os.environ.pop("QWENPAW_RELOAD_MODE", None)
 
     setup_logger(log_level)
     if log_level in ("debug", "trace"):
@@ -101,38 +146,11 @@ def app_cmd(
             SuppressPathAccessLogFilter(paths),
         )
 
-    # QwenPaw 2.0 kernel + enterprise overlay (AIWork Console UI unchanged)
-    kernel = os.environ.get("AIWORK_KERNEL", "").strip().lower()
-    if kernel in ("qwenpaw2", "qw2", "2", "2.0"):
-        try:
-            from aiwork_enterprise.env import (
-                apply_console_static_bridge,
-                apply_working_dir_bridge,
-            )
+    _warn_if_auth_off_non_loopback_bind(host, port)
 
-            apply_working_dir_bridge()
-            apply_console_static_bridge()
-        except ImportError as exc:
-            raise click.ClickException(
-                "AIWORK_KERNEL=qwenpaw2 requires packages/aiwork-enterprise. "
-                "Install with: pip install -e ./packages/aiwork-enterprise "
-                f"({exc})",
-            ) from exc
-        os.environ.setdefault("QWENPAW_LOG_LEVEL", log_level)
-        click.echo(
-            "Starting AIWork-OS UI on QwenPaw 2.0 kernel "
-            "(enterprise overlay enabled)",
-            err=True,
-        )
-        uvicorn.run(
-            "aiwork_enterprise.app:app",
-            host=host,
-            port=port,
-            reload=reload,
-            workers=1,
-            log_level=log_level,
-        )
-        return
+    # On Windows, auto-disable sandbox when not running as admin so the
+    # server starts without a half-broken sandbox layer.
+    auto_disable_sandbox_on_windows()
 
     uvicorn.run(
         "aiwork.app._app:app",

@@ -36,7 +36,7 @@ def _isolated_skills_workspace(
         yield base_workspace
         return
 
-    with tempfile.TemporaryDirectory(prefix="aiwork_headless_") as tmp:
+    with tempfile.TemporaryDirectory(prefix="qwenpaw_headless_") as tmp:
         tmp_path = Path(tmp)
         resolved = Path(skills_dir).resolve()
         (tmp_path / "skills").symlink_to(resolved)
@@ -93,8 +93,12 @@ async def _run_task(
     output_dir: str | None,
     skills_dir: str | None = None,
 ) -> dict:
+    from types import SimpleNamespace
+
     from agentscope.message import Msg
-    from ..agents.react_agent import AiWorkAgent
+
+    from ..runtime.builder import AgentBuilder
+    from ..schemas import AgentRequest
 
     agent_config.running.max_iters = max_iters
 
@@ -103,11 +107,31 @@ async def _run_task(
         base_workspace = Path(agent_config.workspace_dir).expanduser()
 
     with _isolated_skills_workspace(skills_dir, base_workspace) as workspace:
-        agent = AiWorkAgent(
-            agent_config=agent_config,
-            request_context=request_context,
-            workspace_dir=workspace,
+        req = AgentRequest(
+            input=[
+                {
+                    "role": "user",
+                    "content": [{"type": "text", "text": instruction}],
+                },
+            ],
+            session_id=request_context.get("session_id", "headless-task"),
+            user_id=request_context.get("user_id", "headless"),
+            channel=request_context.get("channel", "console"),
         )
+        ctx = SimpleNamespace(
+            request=req,
+            session_id=req.session_id,
+            agent_id=request_context.get("agent_id", "default"),
+            root_session_id=req.session_id,
+            root_agent_id=request_context.get("agent_id", "default"),
+            workspace_dir=workspace,
+            workspace=None,
+            app_services=None,
+            agent_config=None,
+            session_state=None,
+        )
+        builder = AgentBuilder()
+        agent = await builder.build(ctx)
 
         t0 = time.monotonic()
         try:

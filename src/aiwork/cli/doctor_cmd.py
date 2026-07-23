@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
-"""`aiwork doctor` — read-only checks.
+"""`qwenpaw doctor` — read-only checks.
 
-`aiwork doctor fix` — conservative repairs with backup.
+`qwenpaw doctor fix` — conservative repairs with backup.
 """
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ import click
 import httpx
 
 from ..__version__ import __version__
+from ..app.auth import has_registered_users, is_auth_enabled
 from ..config import load_config
 from ..config.utils import strict_validate_config_file
 from ..constant import PROJECT_NAME, WORKING_DIR
@@ -25,6 +26,7 @@ from ..utils.console_static import (
     CONSOLE_STATIC_ENV,
     resolve_console_static_dir,
 )
+from ..utils.http import trust_env_for_url
 from ..utils.system_info import summarize_python_environment
 from .doctor_checks import (
     active_llm_local_failure_hint,
@@ -48,9 +50,10 @@ from .doctor_checks import (
     scan_unknown_config_keys,
     security_baseline_notes,
     skill_layout_notes,
-    aiwork_local_llm_deep_notes,
+    qwenpaw_local_llm_deep_notes,
     startup_extra_volume_disk_notes,
     workspace_hygiene_notes,
+    windows_environment_lines,
 )
 from .doctor_connectivity import collect_deep_channel_connectivity_notes
 from .doctor_registry import DoctorRunContext, run_extension_contributions
@@ -79,6 +82,68 @@ def _same_python_executable(a: str, b: str) -> bool:
             return Path(a).resolve() == Path(b).resolve()
         except OSError:
             return a == b
+
+
+def _http_get(url: str, **kwargs) -> httpx.Response:
+    kwargs.setdefault("trust_env", trust_env_for_url(url))
+    return httpx.get(url, **kwargs)
+
+
+def _check_api_health(
+    base: str,
+    timeout: float,
+) -> tuple[bool, httpx.Response | None]:
+    """Probe the application readiness endpoint and report its status."""
+    health_url = f"{base.rstrip('/')}/api/healthz"
+    try:
+        response = _http_get(health_url, timeout=timeout)
+    except httpx.RequestError as exc:
+        click.echo(
+            click.style("FAIL", fg="red")
+            + f" — health not reachable ({health_url})\n{exc}",
+            err=True,
+        )
+        click.echo(
+            f"Hint: start the server with `qwenpaw app` (default {base}).",
+            err=True,
+        )
+        return False, None
+
+    if response.status_code == 200:
+        click.echo(
+            click.style("OK", fg="green")
+            + f" — health ({health_url}, HTTP 200)",
+        )
+        return True, response
+
+    if response.status_code == 503:
+        detail = "Background startup in progress"
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        if isinstance(body, dict):
+            response_detail = body.get("detail")
+            if isinstance(response_detail, str) and response_detail.strip():
+                detail = response_detail.strip()
+        click.echo(
+            click.style("FAIL", fg="red")
+            + f" — health not ready ({health_url}, HTTP 503)\n{detail}",
+            err=True,
+        )
+        click.echo(
+            "Hint: wait for background startup to complete, then rerun "
+            "`qwenpaw doctor`.",
+            err=True,
+        )
+        return False, response
+
+    click.echo(
+        click.style("FAIL", fg="red")
+        + f" — health HTTP {response.status_code} ({health_url})",
+        err=True,
+    )
+    return False, response
 
 
 def _fetch_running_server_python(
@@ -112,7 +177,7 @@ def _fetch_running_server_python(
         )
 
     try:
-        runtime_resp = httpx.get(runtime_url, timeout=timeout)
+        runtime_resp = _http_get(runtime_url, timeout=timeout)
     except httpx.RequestError as exc:
         return None, None, f"(not available: {exc})"
     if runtime_resp.status_code == 200:
@@ -151,8 +216,8 @@ def _doctor_server_python_mismatch_note(
     if server_exe and doctor_exe:
         if not _same_python_executable(doctor_exe, server_exe):
             return (
-                "This `aiwork doctor` is not using the same Python "
-                "executable as the running `aiwork app` — diagnostics and "
+                "This `qwenpaw doctor` is not using the same Python "
+                "executable as the running `qwenpaw app` — diagnostics and "
                 "package versions may not match the server. doctor: "
                 f"{doctor_exe!r}; server: {server_exe!r}"
             )
@@ -160,7 +225,7 @@ def _doctor_server_python_mismatch_note(
     if doctor_env.strip() != server_env.strip():
         return (
             "Doctor Python environment label differs from the running "
-            f"`aiwork app` (doctor: {doctor_env!r}; server: "
+            f"`qwenpaw app` (doctor: {doctor_env!r}; server: "
             f"{server_env!r}). "
             "Use the same venv when debugging if possible."
         )
@@ -201,10 +266,23 @@ def _check_console_static_files() -> tuple[bool, str]:
 
 
 def _check_web_auth(base: str) -> tuple[bool, str]:
+    if not is_auth_enabled():
+        return True, "disabled (default) — open the console without logging in"
+    if not has_registered_users():
+        return (
+            False,
+            "enabled but no account registered yet.\n"
+            f"        1) Start `qwenpaw app`, open {base}/ in a browser.\n"
+            "        2) Complete registration (single user) on the login "
+            "page.\n"
+            "        For automation, set QWENPAW_AUTH_USERNAME and "
+            "QWENPAW_AUTH_PASSWORD (legacy COPAW_* names still work) — the "
+            "server creates the user on startup.",
+        )
     return (
         True,
-        f"JWT auth enabled — open {base}/ and sign in; the console stores "
-        "your session. API clients must send Authorization: Bearer <token> "
+        f"enabled — open {base}/ and sign in; the console stores your "
+        "session. API clients must send Authorization: Bearer <token> "
         "from login.",
     )
 
@@ -229,7 +307,7 @@ def _classify_console_root_response(resp: httpx.Response) -> tuple[bool, str]:
                     "server is running but the console bundle is not "
                     "installed — build `console/` or set "
                     f"{CONSOLE_STATIC_ENV}, then restart "
-                    "`aiwork app`.",
+                    "`qwenpaw app`.",
                 )
         return False, "HTTP GET / returned JSON instead of the console page"
     return (
@@ -251,7 +329,7 @@ async def _check_active_llm(
     ):
         return (
             False,
-            "no active LLM slot — run `aiwork models list` and configure "
+            "no active LLM slot — run `qwenpaw models list` and configure "
             "an active model",
             [],
         )
@@ -264,8 +342,8 @@ async def _check_active_llm(
 
     deep_notes: list[str] = []
     pid = (slot.provider_id or "").strip()
-    if deep and pid in ("aiwork-local", "copaw-local"):
-        deep_notes = aiwork_local_llm_deep_notes()
+    if deep and pid in ("qwenpaw-local", "copaw-local"):
+        deep_notes = qwenpaw_local_llm_deep_notes()
 
     if not getattr(provider, "support_connection_check", True):
         return (
@@ -284,7 +362,7 @@ async def _check_active_llm(
         if getattr(provider, "is_local", False) or slot.provider_id in (
             "ollama",
             "lmstudio",
-            "aiwork-local",
+            "qwenpaw-local",
             "copaw-local",
         ):
             hint = active_llm_local_failure_hint(provider, slot.provider_id)
@@ -359,7 +437,7 @@ def run_doctor_checks(
     llm_timeout: float,
     deep: bool,
 ) -> None:
-    """Run read-only ``aiwork doctor`` checks (no disk mutations)."""
+    """Run read-only ``qwenpaw doctor`` checks (no disk mutations)."""
     base = resolve_base_url(ctx, None).rstrip("/")
     failed = False
 
@@ -380,6 +458,12 @@ def run_doctor_checks(
     if mismatch:
         click.echo(click.style("Note:", fg="yellow") + f" {mismatch}")
 
+    win_lines = windows_environment_lines()
+    if win_lines:
+        click.echo("\n=== Windows environment ===")
+        for line in win_lines:
+            click.echo(f"  {line}")
+
     click.echo("\n=== Config ===")
     config_ok, detail = strict_validate_config_file()
     if config_ok:
@@ -390,7 +474,7 @@ def run_doctor_checks(
         _doctor_fix_hint(
             "fix the root `config.json` fields shown above. "
             "For workspace repairs after it validates, see "
-            "`aiwork doctor fix --dry-run --help` and `--only`.",
+            "`qwenpaw doctor fix --dry-run --help` and `--only`.",
         )
 
     raw_cfg = load_raw_config_dict()
@@ -408,7 +492,7 @@ def run_doctor_checks(
                 click.echo(f"  - {item}")
             _doctor_fix_hint(
                 "Fix: edit `config.json` manually to remove obsolete keys "
-                "(`aiwork doctor` and `doctor fix` do not strip unknown keys "
+                "(`qwenpaw doctor` and `doctor fix` do not strip unknown keys "
                 "yet).",
             )
 
@@ -431,7 +515,7 @@ def run_doctor_checks(
                 err=True,
             )
             _doctor_fix_hint(
-                "Preview the plan (no writes): `aiwork doctor fix --dry-run "
+                "Preview the plan (no writes): `qwenpaw doctor fix --dry-run "
                 "--only ensure-working-dir,ensure-workspace-dirs`. Apply: run "
                 "the plan without `--dry-run` (add `-y` to skip the "
                 "confirmation prompt).",
@@ -448,7 +532,7 @@ def run_doctor_checks(
                 err=True,
             )
             _doctor_fix_hint(
-                "Preview the plan (no writes): `aiwork doctor fix --dry-run "
+                "Preview the plan (no writes): `qwenpaw doctor fix --dry-run "
                 "--only seed-missing-agent-json,reset-invalid-agent-json`. "
                 "Apply: run the plan without `--dry-run` (risky writes need "
                 "adding `-y` to skip the confirmation prompt).",
@@ -465,7 +549,7 @@ def run_doctor_checks(
                 err=True,
             )
             _doctor_fix_hint(
-                "Preview the plan (no writes): `aiwork doctor fix --dry-run "
+                "Preview the plan (no writes): `qwenpaw doctor fix --dry-run "
                 "--only seed-missing-agent-json,reset-invalid-agent-json`. "
                 "Apply: run the plan without `--dry-run` (risky writes need "
                 "adding `-y` to skip the confirmation prompt).",
@@ -599,7 +683,7 @@ def run_doctor_checks(
                 err=True,
             )
             _doctor_fix_hint(
-                "Preview the plan (no writes): `aiwork doctor fix --dry-run "
+                "Preview the plan (no writes): `qwenpaw doctor fix --dry-run "
                 "--only validate-all-jobs-json` (read-only), or the same "
                 "command with `write-empty-jobs-json,normalize-jobs-cron` in "
                 "`--only`. "
@@ -628,7 +712,7 @@ def run_doctor_checks(
             click.style("SKIP", fg="yellow")
             + " — not run because root `config.json` failed validation above: "
             + _skipped_when_cfg_invalid
-            + ". Fix the config file, then re-run `aiwork doctor`.",
+            + ". Fix the config file, then re-run `qwenpaw doctor`.",
         )
         click.echo("\n=== Browser (browser_use / Playwright) ===")
         br_skip = browser_automation_notes(None)
@@ -649,9 +733,9 @@ def run_doctor_checks(
         failed = True
         click.echo(click.style("FAIL", fg="red") + f" — {detail}", err=True)
         _doctor_fix_hint(
-            "Fix: set `AIWORK_WORKING_DIR` (or legacy `COPAW_WORKING_DIR`) "
-            "or run `aiwork init`. "
-            "Preview the plan (no writes): `aiwork doctor fix --dry-run "
+            "Fix: set `QWENPAW_WORKING_DIR` (or legacy `COPAW_WORKING_DIR`) "
+            "or run `qwenpaw init`. "
+            "Preview the plan (no writes): `qwenpaw doctor fix --dry-run "
             "--only ensure-working-dir` if the parent path exists and is "
             "writable. Apply: run the plan `without --dry-run` (add `-y` to "
             "skip the confirmation prompt).",
@@ -677,7 +761,7 @@ def run_doctor_checks(
             )
             _doctor_fix_hint(
                 "Fix: ensure the data directory is writable. "
-                "Preview the plan (no writes): `aiwork doctor fix --dry-run "
+                "Preview the plan (no writes): `qwenpaw doctor fix --dry-run "
                 "--only ensure-working-dir` if the directory is missing and "
                 "the parent allows creating it. Apply: run the plan `without "
                 "--dry-run` (add `-y` to skip the confirmation prompt).",
@@ -721,7 +805,7 @@ def run_doctor_checks(
         _doctor_fix_hint(
             f"Fix: build `console/` or set {CONSOLE_STATIC_ENV}. From a git "
             "checkout — "
-            "Preview the plan (no writes): `aiwork doctor fix --dry-run "
+            "Preview the plan (no writes): `qwenpaw doctor fix --dry-run "
             "--only rebuild-console-npm`. "
             "Apply: run `without --dry-run` and include `-y` (runs npm; "
             "copies dist → bundled console).",
@@ -769,7 +853,7 @@ def run_doctor_checks(
             err=True,
         )
         _doctor_fix_hint(
-            "`aiwork models list` / console model settings — not a "
+            "`qwenpaw models list` / console model settings — not a "
             "filesystem fix.",
         )
     for line in llm_notes:
@@ -816,37 +900,13 @@ def run_doctor_checks(
             click.echo(click.style("Note:", fg="yellow") + f" {mismatch}")
 
     click.echo("\n=== API ===")
-    health_url = f"{base}/api/agent/health"
     version_url = f"{base}/api/version"
-    try:
-        health_resp = httpx.get(health_url, timeout=timeout)
-    except httpx.RequestError as exc:
+    health_ok, health_resp = _check_api_health(base, timeout)
+    if not health_ok:
         failed = True
-        click.echo(
-            click.style("FAIL", fg="red")
-            + f" — health not reachable ({health_url})\n{exc}",
-            err=True,
-        )
-        click.echo(
-            f"Hint: start the server with `aiwork app` (default {base}).",
-            err=True,
-        )
-    else:
-        if health_resp.status_code == 200:
-            click.echo(
-                click.style("OK", fg="green")
-                + f" — health ({health_url}, HTTP 200)",
-            )
-        else:
-            failed = True
-            click.echo(
-                click.style("FAIL", fg="red")
-                + f" — health HTTP {health_resp.status_code} ({health_url})",
-                err=True,
-            )
-
+    if health_resp is not None:
         try:
-            version_resp = httpx.get(version_url, timeout=timeout)
+            version_resp = _http_get(version_url, timeout=timeout)
         except httpx.RequestError as exc:
             failed = True
             click.echo(
@@ -888,9 +948,9 @@ def run_doctor_checks(
                         ),
                     )
 
-        if health_resp.status_code == 200:
+        if health_ok:
             try:
-                root_resp = httpx.get(
+                root_resp = _http_get(
                     f"{base}/",
                     timeout=timeout,
                     follow_redirects=True,
@@ -950,7 +1010,7 @@ def run_doctor_checks(
     is_flag=True,
     help=(
         "Run extra checks: enabled-channel reachability (non-fatal notes; "
-        "uses --timeout) and, when the active model is aiwork-local, "
+        "uses --timeout) and, when the active model is qwenpaw-local, "
         "llama.cpp install/server status notes."
     ),
 )

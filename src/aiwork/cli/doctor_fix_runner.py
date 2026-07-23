@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Conservative filesystem repairs for ``aiwork doctor fix``.
+"""Conservative filesystem repairs for ``qwenpaw doctor fix``.
 
 Backup, allowlist, atomic write. Includes ``reconcile-workspace-skills``,
 which calls the same ``reconcile_workspace_manifest`` as the app (CLI-only,
@@ -33,10 +33,8 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..__version__ import __version__
-from ..agents.skills_manager import (
-    get_workspace_skill_manifest_path,
-    reconcile_workspace_manifest,
-)
+from ..agents.skill_system.registry import reconcile_workspace_manifest
+from ..agents.skill_system.store import get_workspace_skill_manifest_path
 from ..app.crons.models import JobsFile, ScheduleSpec
 from ..config import load_config
 from ..config.config import (
@@ -49,7 +47,7 @@ from ..config.utils import (
     strict_validate_config_file,
 )
 from ..constant import JOBS_FILE, WORKING_DIR
-from ..utils.console_static import find_aiwork_source_repo_root
+from ..utils.console_static import find_qwenpaw_source_repo_root
 from .doctor_checks import check_cron_jobs_files
 
 SAFE_FIX_IDS = frozenset({"ensure-working-dir", "ensure-workspace-dirs"})
@@ -130,8 +128,8 @@ def _normalize_cron_fields_in_jobs_dict(data: dict[str, Any]) -> bool:
         cron = sch.get("cron")
         if not isinstance(cron, str):
             continue
-        tz_raw = sch.get("timezone", "Asia/Shanghai")
-        tz = tz_raw if isinstance(tz_raw, str) else "Asia/Shanghai"
+        tz_raw = sch.get("timezone", "UTC")
+        tz = tz_raw if isinstance(tz_raw, str) else "UTC"
         jid = j.get("id", "?")
         try:
             ns = ScheduleSpec(type="cron", cron=cron, timezone=tz)
@@ -227,7 +225,7 @@ def _write_meta(
     cfg = load_config()
     ch, cp = _effective_cli_api_host_port(cli_api_host, cli_api_port)
     meta = {
-        "aiwork_version": __version__,
+        "qwenpaw_version": __version__,
         "utc": datetime.now(timezone.utc).isoformat(),
         "argv": argv,
         "fix_ids": fix_ids,
@@ -292,7 +290,7 @@ def _plan_fixes(
                 raise ValueError(
                     f"fix {fid!r} requires --yes (-y) to apply "
                     "(may modify files or run external tools such as npm). "
-                    "Use `aiwork doctor fix --dry-run --only ...` to preview "
+                    "Use `qwenpaw doctor fix --dry-run --only ...` to preview "
                     "the plan without -y.",
                 )
 
@@ -314,7 +312,7 @@ def _plan_fixes(
     ):
         raise ValueError(
             f"working directory {wd} does not exist; include "
-            "ensure-working-dir in --only or run `aiwork doctor fix` without "
+            "ensure-working-dir in --only or run `qwenpaw doctor fix` without "
             "--only (safe fixes include it when needed).",
         )
 
@@ -595,10 +593,10 @@ def _plan_fixes(
             )
 
     if "rebuild-console-npm" in fix_ids:
-        repo = find_aiwork_source_repo_root()
+        repo = find_qwenpaw_source_repo_root()
         if repo is None:
             skip_msgs.append(
-                "rebuild-console-npm: only in a AiWork source checkout "
+                "rebuild-console-npm: only in a QwenPaw source checkout "
                 "(./console/package.json + ./console/package-lock.json + "
                 "./src/aiwork/)",
             )
@@ -632,7 +630,7 @@ def _plan_fixes(
                     and target.exists()
                     and any(target.iterdir())
                 ):
-                    bkp_root = r / ".aiwork-doctor-fix-backups"
+                    bkp_root = r / ".qwenpaw-doctor-fix-backups"
                     sid = _utc_session_id()
                     bkp = bkp_root / sid
                     prev = bkp / "previous-console-bundle"
@@ -642,7 +640,7 @@ def _plan_fixes(
                     shutil.copytree(target, prev)
                     bkp.mkdir(parents=True, exist_ok=True)
                     meta = {
-                        "aiwork_version": __version__,
+                        "qwenpaw_version": __version__,
                         "previous_bundle": str(prev),
                     }
                     (bkp / "meta.json").write_text(

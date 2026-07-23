@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Read-only diagnostics for `aiwork doctor` (no config or disk mutations)."""
+"""Read-only diagnostics for `qwenpaw doctor` (no config or disk mutations)."""
 from __future__ import annotations
 
 # pylint: disable=too-many-branches,too-many-statements
@@ -8,8 +8,10 @@ import asyncio
 import importlib
 import importlib.util
 import json
+import ntpath
 import os
 import platform
+import subprocess
 import shutil
 import sqlite3
 import sys
@@ -18,7 +20,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from ..__version__ import __version__
-from ..agents.skills_manager import (
+from ..agents.skill_system import (
     get_workspace_skills_dir,
     read_skill_manifest,
 )
@@ -62,7 +64,7 @@ APP_LOG_BASENAME = LOG_FILE_BASENAME
 
 # Built-in local llama.cpp provider id; legacy configs may still use
 # copaw-local.
-_AIWORK_LOCAL_PROVIDER_IDS = frozenset({"aiwork-local", "copaw-local"})
+_QWENPAW_LOCAL_PROVIDER_IDS = frozenset({"qwenpaw-local", "copaw-local"})
 
 
 def _resolve_existing_path_anchor(path: Path) -> Path | None:
@@ -99,7 +101,7 @@ def check_app_log_writable() -> tuple[bool, str]:
         return (
             False,
             f"cannot write to existing log file {log_path} "
-            "(required when starting `aiwork app`)",
+            "(required when starting `qwenpaw app`)",
         )
 
     parent = log_path.parent
@@ -107,7 +109,7 @@ def check_app_log_writable() -> tuple[bool, str]:
         return (
             False,
             f"log directory does not exist: {parent} "
-            "(required when starting `aiwork app`)",
+            "(required when starting `qwenpaw app`)",
         )
     if os.access(parent, os.W_OK | os.X_OK):
         return (
@@ -189,7 +191,7 @@ def environment_summary_lines(
     """One line per fact; safe to paste into bug reports.
 
     *server_python_environment* describes the **HTTP API process** (running
-    ``aiwork app``), when ``GET /api/doctor/runtime`` returned
+    ``qwenpaw app``), when ``GET /api/doctor/runtime`` returned
     ``python_environment``. Doctor's own interpreter uses
     ``doctor_python_environment``.
     """
@@ -197,24 +199,24 @@ def environment_summary_lines(
     doctor_env = summarize_python_environment()
     lines = [
         f"python version: {py_ver}",
-        f"aiwork version: {__version__}",
+        f"qwenpaw version: {__version__}",
         f"platform: {platform.system()} {platform.machine()}",
         f"doctor_python_environment: {doctor_env}",
     ]
     if server_python_environment is not None:
         lines.append(
-            f"aiwork_python_environment: {server_python_environment}",
+            f"qwenpaw_python_environment: {server_python_environment}",
         )
     else:
         lines.append(
-            "aiwork_python_environment: "
+            "qwenpaw_python_environment: "
             + (server_python_note or "(unknown)"),
         )
     lines.append(f"working_dir: {WORKING_DIR}")
-    wd_qp = os.getenv("AIWORK_WORKING_DIR")
+    wd_qp = os.getenv("QWENPAW_WORKING_DIR")
     wd_legacy = os.getenv("COPAW_WORKING_DIR")
     if wd_qp:
-        lines.append(f"AIWORK_WORKING_DIR (env): {wd_qp}")
+        lines.append(f"QWENPAW_WORKING_DIR (env): {wd_qp}")
     elif wd_legacy:
         lines.append(f"COPAW_WORKING_DIR (env, legacy): {wd_legacy}")
     lines.append(f"sqlite library: {sqlite3.sqlite_version}")
@@ -249,6 +251,101 @@ def load_raw_config_dict() -> dict[str, Any] | None:
         return None
     data = _read_config_data(path)
     return data if isinstance(data, dict) else None
+
+
+def _windows_long_paths_enabled() -> tuple[bool | None, str | None]:
+    """Read Windows long-path support from registry, if available."""
+    try:
+        import winreg  # pylint: disable=import-outside-toplevel
+    except ImportError:
+        return None, "winreg is unavailable"
+
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_LOCAL_MACHINE,
+            r"SYSTEM\CurrentControlSet\Control\FileSystem",
+        ) as key:
+            value, _ = winreg.QueryValueEx(key, "LongPathsEnabled")
+    except OSError as exc:
+        return None, str(exc)
+    return bool(value), None
+
+
+def _powershell_language_mode(
+    executable: str,
+) -> tuple[str | None, str | None]:
+    """Return PowerShell language mode without mutating user state."""
+    try:
+        completed = subprocess.run(
+            [
+                executable,
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ExecutionContext.SessionState.LanguageMode",
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, str(exc)
+
+    output = (completed.stdout or "").strip()
+    if completed.returncode == 0 and output:
+        return output.splitlines()[-1].strip(), None
+    error = (completed.stderr or "").strip()
+    return None, error or f"exit code {completed.returncode}"
+
+
+def windows_environment_lines() -> list[str]:
+    """Windows-specific read-only diagnostics for ``qwenpaw doctor``."""
+    if platform.system() != "Windows":
+        return []
+
+    lines: list[str] = []
+    enabled, err = _windows_long_paths_enabled()
+    if enabled is True:
+        lines.append("Long paths: enabled")
+    elif enabled is False:
+        lines.append(
+            "Long paths: disabled; deeply nested workspaces, skills, "
+            "caches, or package installs may fail over 260 characters",
+        )
+    else:
+        detail = f"; {err}" if err else ""
+        lines.append(f"Long paths: unknown{detail}")
+
+    cwd_len = len(str(WORKING_DIR))
+    cwd_line = f"Current working directory length: {cwd_len}"
+    if cwd_len >= 220:
+        cwd_line += "; close to Windows MAX_PATH"
+    lines.append(cwd_line)
+
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    pwsh = shutil.which("pwsh.exe") or shutil.which("pwsh")
+    if powershell:
+        lines.append(f"PowerShell: found {ntpath.basename(powershell)}")
+        executable = powershell
+    elif pwsh:
+        lines.append(f"PowerShell: found {ntpath.basename(pwsh)}")
+        executable = pwsh
+    else:
+        lines.append("PowerShell: not found on PATH")
+        return lines
+
+    mode, mode_err = _powershell_language_mode(executable)
+    if mode:
+        mode_line = f"PowerShell language mode: {mode}"
+        if mode == "ConstrainedLanguage":
+            mode_line += "; some scripts may be restricted"
+        lines.append(mode_line)
+    else:
+        detail = f"; {mode_err}" if mode_err else ""
+        lines.append(f"PowerShell language mode: unknown{detail}")
+    return lines
 
 
 def scan_unknown_config_keys(raw: dict[str, Any]) -> list[str]:
@@ -310,7 +407,7 @@ def scan_unknown_config_keys(raw: dict[str, Any]) -> list[str]:
 def legacy_single_agent_workspace_note(cfg: Config) -> str | None:
     """Align with ``migrate_legacy_workspace_to_default_agent`` preconditions.
 
-    When this applies, ``aiwork app`` may run an automatic migration;
+    When this applies, ``qwenpaw app`` may run an automatic migration;
     doctor only informs — it does not migrate.
     """
     profiles = cfg.agents.profiles
@@ -325,8 +422,8 @@ def legacy_single_agent_workspace_note(cfg: Config) -> str | None:
     return (
         "Only `default` is listed and workspace "
         f"`{agent_json}` is missing — the same situation "
-        "`aiwork app` uses to trigger legacy → multi-agent workspace "
-        "migration. Start `aiwork app` once (or see docs / `aiwork init`). "
+        "`qwenpaw app` uses to trigger legacy → multi-agent workspace "
+        "migration. Start `qwenpaw app` once (or see docs / `qwenpaw init`). "
         "Doctor does not change config or files."
     )
 
@@ -459,13 +556,13 @@ def browser_automation_notes(cfg: Config | None) -> list[str]:
         return notes
 
     use_default = (
-        EnvVarLoader.get_str("AIWORK_BROWSER_USE_DEFAULT", "1")
+        EnvVarLoader.get_str("QWENPAW_BROWSER_USE_DEFAULT", "1")
         .strip()
         .lower()
     )
     if use_default in ("0", "false", "no", "off"):
         notes.append(
-            "AIWORK_BROWSER_USE_DEFAULT is off — browser_use will not "
+            "QWENPAW_BROWSER_USE_DEFAULT is off — browser_use will not "
             "prefer the OS default Chrome/Edge path; bundled or scanned "
             "Chromium paths apply.",
         )
@@ -548,14 +645,10 @@ def security_baseline_notes(cfg: Config) -> list[str]:
     return notes
 
 
-def _embedding_has_credentials(emb_api_key: str) -> bool:
-    if (emb_api_key or "").strip():
+def _embedding_has_credentials(backend: str, emb_api_key: str) -> bool:
+    if backend == "ollama":
         return True
-    return bool(
-        os.getenv("OPENAI_API_KEY")
-        or os.getenv("DASHSCOPE_API_KEY")
-        or os.getenv("ANTHROPIC_API_KEY"),
-    )
+    return bool((emb_api_key or "").strip())
 
 
 def memory_embedding_notes(cfg: Config) -> list[str]:
@@ -566,26 +659,25 @@ def memory_embedding_notes(cfg: Config) -> list[str]:
             ac = load_agent_config(agent_id)
         except Exception:  # pylint: disable=broad-exception-caught
             continue
-        mem_cfg = ac.running.get_active_memory_config()
-        emb = mem_cfg.embedding_model_config
-        ms = mem_cfg.auto_memory_search_config
+        emb = ac.running.reme_light_memory_config.embedding_model_config
+        ms = ac.running.reme_light_memory_config.auto_memory_search_config
         if ms.enabled and not _embedding_has_credentials(
+            emb.backend,
             emb.api_key,
         ):
-            backend = ac.running.memory_manager_backend
             notes.append(
                 f"{agent_id}: "
-                f"{backend}_memory_config.auto_memory_search_config.enabled "
+                "reme_light_memory_config.auto_memory_search_config.enabled "
                 "is on but no embedding API key is set in "
-                f"{backend}_memory_config.embedding_model_config.api_key "
-                "and no common OPENAI_/DASHSCOPE_/ANTHROPIC_ "
-                "API key env was found.",
+                "reme_light_memory_config.embedding_model_config.api_key "
+                "and no matching provider API key environment variable "
+                "was found.",
             )
     return notes
 
 
 def workspace_hygiene_notes(cfg: Config) -> list[str]:
-    """Large prompt files, heavy tool_result/dialog dirs; memory tree size."""
+    """Large prompt files, heavy tool_results/dialog dirs; memory tree size."""
     notes: list[str] = []
     bootstrap_names = (
         "AGENTS.md",
@@ -611,7 +703,7 @@ def workspace_hygiene_notes(cfg: Config) -> list[str]:
                     "burn context; consider splitting or summarizing.",
                 )
         for sub, many, label in (
-            ("tool_result", _TOOL_RESULT_MANY, "tool_result"),
+            ("tool_results", _TOOL_RESULT_MANY, "tool_results"),
             ("dialog", _DIALOG_MANY, "dialog"),
         ):
             d = wd / sub
@@ -658,7 +750,7 @@ def workspace_hygiene_notes(cfg: Config) -> list[str]:
     return notes
 
 
-# --- AiWork checks (agent.json, channels, MCP, skills, providers) ---
+# --- QwenPaw checks (agent.json, channels, MCP, skills, providers) ---
 
 
 def _read_workspace_agent_json(ref: AgentProfileRef) -> dict[str, Any] | None:
@@ -723,7 +815,7 @@ def check_enabled_agents_load_agent_config(cfg: Config) -> tuple[bool, str]:
             problems.append(
                 f"{agent_id}: enabled but missing {path} — at startup "
                 "`load_agent_config` would create a fallback agent.json on "
-                "disk; ensure the file exists or use `aiwork doctor fix` "
+                "disk; ensure the file exists or use `qwenpaw doctor fix` "
                 "where applicable.",
             )
             continue
@@ -1022,11 +1114,11 @@ def active_llm_local_failure_hint(provider: Provider, provider_id: str) -> str:
             "Hint: open LM Studio, load a model, and enable the local server. "
             f"Typical base URL: {base.rstrip('/')}"
         )
-    if provider_id in _AIWORK_LOCAL_PROVIDER_IDS:
+    if provider_id in _QWENPAW_LOCAL_PROVIDER_IDS:
         return (
             f"Hint: {PROJECT_NAME} Local uses llama.cpp. Start the local "
             f"server from the {PROJECT_NAME} console or install the llama.cpp "
-            "binary from there. Run `aiwork doctor --deep` to see llama.cpp "
+            "binary from there. Run `qwenpaw doctor --deep` to see llama.cpp "
             "install and server status."
         )
     if getattr(provider, "is_local", False):
@@ -1040,7 +1132,7 @@ def active_llm_local_failure_hint(provider: Provider, provider_id: str) -> str:
     return ""
 
 
-def aiwork_local_llm_deep_notes() -> list[str]:
+def qwenpaw_local_llm_deep_notes() -> list[str]:
     """Read-only llama.cpp install + server snapshot (``--deep`` / local)."""
     try:
         from ..local_models.manager import LocalModelManager
@@ -1179,10 +1271,10 @@ async def check_enabled_agents_model_connections(
             )
             continue
 
-        if deep and pid in _AIWORK_LOCAL_PROVIDER_IDS:
+        if deep and pid in _QWENPAW_LOCAL_PROVIDER_IDS:
             # Only add once (same underlying llama.cpp runtime).
             if not any("llama.cpp" in n for n in notes):
-                notes.extend(aiwork_local_llm_deep_notes())
+                notes.extend(qwenpaw_local_llm_deep_notes())
 
         if not getattr(provider, "support_connection_check", True):
             lines.append(
@@ -1208,7 +1300,7 @@ async def check_enabled_agents_model_connections(
         if getattr(provider, "is_local", False) or pid in (
             "ollama",
             "lmstudio",
-            *_AIWORK_LOCAL_PROVIDER_IDS,
+            *_QWENPAW_LOCAL_PROVIDER_IDS,
         ):
             hint = active_llm_local_failure_hint(provider, pid)
             if hint:
@@ -1226,12 +1318,12 @@ def console_static_diagnostic_notes() -> list[str]:
 
     from ..utils.console_static import (
         CONSOLE_STATIC_ENV,
-        find_aiwork_source_repo_root,
+        find_qwenpaw_source_repo_root,
         resolve_console_static_dir,
     )
 
     notes: list[str] = []
-    env_dir = EnvVarLoader.get_str("AIWORK_CONSOLE_STATIC_DIR", "").strip()
+    env_dir = EnvVarLoader.get_str("QWENPAW_CONSOLE_STATIC_DIR", "").strip()
     if env_dir:
         notes.append(
             f"{CONSOLE_STATIC_ENV} is set — the app serves console files "
@@ -1263,12 +1355,12 @@ def console_static_diagnostic_notes() -> list[str]:
         + (npm if npm else "not found (install Node.js or fix PATH)"),
     )
 
-    repo = find_aiwork_source_repo_root()
+    repo = find_qwenpaw_source_repo_root()
     if repo is not None:
         notes.append(
             f"source checkout detected at {repo} — if you changed the web "
             "console under `console/`, you could rebuild the bundled UI with "
-            "`aiwork doctor fix -y --only rebuild-console-npm`.",
+            "`qwenpaw doctor fix -y --only rebuild-console-npm`.",
         )
     else:
         notes.append(

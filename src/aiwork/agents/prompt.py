@@ -9,7 +9,7 @@ import logging
 import re
 from pathlib import Path
 
-from agentscope_runtime.engine.schemas.exception import (
+from aiwork.exceptions import (
     ConfigurationException,
 )
 
@@ -25,6 +25,19 @@ You are a helpful assistant.
 
 # Backward compatibility alias
 SYS_PROMPT = DEFAULT_SYS_PROMPT
+
+DRIVER_POLICY_RECHECK_HINT = (
+    "Driver and MCP permission results are evaluated at the moment of a "
+    "tool call. A previous `driver_policy_denied` result in the "
+    "conversation history does not prove the tool is still denied in a "
+    "later user turn, because users may change Driver policy between "
+    "messages. If the user asks for the action again in a later turn, "
+    "attempt the relevant tool again and let the current policy decide. "
+    "Previous assistant messages that only explained such a denial are "
+    "also point-in-time. "
+    "Do not refuse solely because of an earlier `driver_policy_denied` "
+    "result."
+)
 
 
 class PromptConfig:
@@ -182,9 +195,7 @@ class PromptBuilder:
 
         # Get memory prompt from manager or fallback
         if self.memory_manager:
-            memory_section = self.memory_manager.get_memory_prompt(
-                self.language,
-            )
+            memory_section = self.memory_manager.get_memory_prompt()
         else:
             memory_section = ""
 
@@ -320,6 +331,58 @@ def build_system_prompt_from_working_dir(
     return prompt
 
 
+def build_bootstrap_guidance(
+    language: str = "zh",
+) -> str:
+    """Build bootstrap guidance message for first-time setup.
+
+    Args:
+        language: Language code (zh/en/ru)
+
+    Returns:
+        Formatted bootstrap guidance message
+    """
+    if language == "zh":
+        return (
+            "# 引导模式\n"
+            "\n"
+            "工作目录中存在 `BOOTSTRAP.md` — 首次设置。\n"
+            "\n"
+            "1. 阅读 BOOTSTRAP.md，友好地表示初次见面，"
+            "引导用户完成设置。\n"
+            "2. 按照 BOOTSTRAP.md 的指示，"
+            "帮助用户定义你的身份和偏好。\n"
+            "3. 按指南创建/更新必要文件"
+            "（PROFILE.md、MEMORY.md 等）。\n"
+            "4. 完成后删除 BOOTSTRAP.md。\n"
+            "\n"
+            "如果用户希望跳过，直接回答下面的问题即可。\n"
+            "\n"
+            "---\n"
+            "\n"
+        )
+    # en / ru / other — default to English
+    return (
+        "# BOOTSTRAP MODE\n"
+        "\n"
+        "`BOOTSTRAP.md` exists — first-time setup.\n"
+        "\n"
+        "1. Read BOOTSTRAP.md, greet the user, "
+        "and guide them through setup.\n"
+        "2. Follow BOOTSTRAP.md instructions "
+        "to define identity and preferences.\n"
+        "3. Create/update files "
+        "(PROFILE.md, MEMORY.md, etc.) as described.\n"
+        "4. Delete BOOTSTRAP.md when done.\n"
+        "\n"
+        "If the user wants to skip, answer their "
+        "question directly instead.\n"
+        "\n"
+        "---\n"
+        "\n"
+    )
+
+
 def _get_active_model_info():
     """Resolve the active model's ModelInfo and model name.
 
@@ -366,11 +429,20 @@ def _get_active_model_info():
 
 
 def get_active_model_supports_multimodal() -> bool:
-    """Check if the current active model supports multimodal input."""
+    """Check if the current active model supports multimodal input.
+
+    Defaults to True when model info is unavailable or the
+    capability has not been probed yet, so that unknown models
+    fail-open (sending an image to a text-only model yields a
+    recoverable API error, but stripping images from a
+    multimodal model silently breaks functionality).
+    """
     model_info, _ = _get_active_model_info()
     if model_info is None:
-        return False
-    return bool(model_info.supports_multimodal)
+        return True
+    if model_info.supports_image or model_info.supports_video:
+        return True
+    return model_info.supports_multimodal is not False
 
 
 def get_active_model_multimodal_raw() -> bool | None:
@@ -401,6 +473,11 @@ def build_multimodal_hint() -> str:
     return format_multimodal_hint(model_info, model_name)
 
 
+def build_driver_policy_recheck_hint() -> str:
+    """Build guidance for point-in-time Driver/MCP policy results."""
+    return DRIVER_POLICY_RECHECK_HINT
+
+
 def format_multimodal_hint(model_info, _model_name: str) -> str:
     """Format the multimodal hint string for the system prompt."""
     if (
@@ -418,7 +495,9 @@ def format_multimodal_hint(model_info, _model_name: str) -> str:
 
 __all__ = [
     "build_system_prompt_from_working_dir",
+    "build_bootstrap_guidance",
     "build_multimodal_hint",
+    "build_driver_policy_recheck_hint",
     "format_multimodal_hint",
     "get_active_model_supports_multimodal",
     "get_active_model_multimodal_raw",

@@ -471,7 +471,7 @@ class ILinkClient:
         # Convert to hex string for API call (32 hex chars)
         aes_key_hex = aes_key_raw_bytes.hex()
         # For message, we need base64(hex_string) -
-        # following picoclaw's encodeWeChatOutboundAESKey
+        # following picoclaw's encodeWeixinOutboundAESKey
         aes_key_for_msg = base64.b64encode(aes_key_hex.encode()).decode()
         # For encryption, use base64 encoding of raw key
         aes_key_b64_for_encrypt = base64.b64encode(aes_key_raw_bytes).decode()

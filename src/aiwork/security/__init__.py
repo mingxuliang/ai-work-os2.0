@@ -1,12 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-Security framework for AiWork.
+Security framework for QwenPaw.
 
 This package centralises all security-related mechanisms:
 
-* **Prompt injection detection** (``aiwork.security.prompt_guard``)
-  Runtime regex-based scan of user input before it reaches LLM prompts.
-  Reuses the same signature rules as the skill scanner.
 * **Tool-call guarding** (``aiwork.security.tool_guard``)
   Pre-execution parameter scanning to detect dangerous tool usage
   patterns (command injection, data exfiltration, etc.).

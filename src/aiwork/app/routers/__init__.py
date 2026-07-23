@@ -7,36 +7,46 @@ from .agents import router as agents_router
 from .config import router as config_router
 from .local_models import router as local_models_router
 from .providers import router as providers_router
+from .market import router as market_router
 from .skills import router as skills_router
 from .skills_stream import router as skills_stream_router
 from .workspace import router as workspace_router
 from .envs import router as envs_router
 from .mcp import router as mcp_router
+from .mcp_oauth import router as mcp_oauth_router
 from .tools import router as tools_router
 from ..crons.api import router as cron_router
-from ..runner.api import router as runner_router
+from ..chats.api import router as runner_router
 from .console import router as console_router
+from .fork import router as fork_router
 from .token_usage import router as token_usage_router
 from .agent_stats import router as agent_stats_router
+from .auth import router as auth_router
 from .messages import router as messages_router
 from .files import router as files_router
 from .settings import router as settings_router
 from .plugins import router as plugins_router
+from .frontend_plugin import router as frontend_plugin_router
 from .backup import router as backup_router
-from .plan import router as plan_router
-from .rss_proxy import router as rss_proxy_router
+from .git import router as git_router
+from .coding_project import router as coding_project_router
+from .access_control import router as access_control_router
+from .provider_oauth import router as provider_oauth_router
 
 router = APIRouter()
 
 router.include_router(agents_router)
 router.include_router(config_router)
 router.include_router(console_router)
+router.include_router(fork_router)
 router.include_router(cron_router)
 router.include_router(local_models_router)
+router.include_router(mcp_oauth_router)
 router.include_router(mcp_router)
 router.include_router(messages_router)
 router.include_router(providers_router)
 router.include_router(runner_router)
+router.include_router(market_router)
 router.include_router(skills_router)
 router.include_router(skills_stream_router)
 router.include_router(tools_router)
@@ -44,64 +54,16 @@ router.include_router(workspace_router)
 router.include_router(envs_router)
 router.include_router(token_usage_router)
 router.include_router(agent_stats_router)
+router.include_router(auth_router)
 router.include_router(files_router)
 router.include_router(settings_router)
 router.include_router(plugins_router)
+router.include_router(frontend_plugin_router)
 router.include_router(backup_router)
-router.include_router(plan_router)
-router.include_router(rss_proxy_router)
-
-# Always register JWT auth routes
-from ..auth_jwt import get_router
-
-router.include_router(get_router())
-
-# Unified /auth/status alias (public endpoint for the login page).
-# The JWT router is at /auth/jwt/status; expose a shorter path so the
-# frontend can call /api/auth/status regardless of auth mode.
-from fastapi import APIRouter as _APIRouter
-
-_auth_alias_router = _APIRouter(prefix="/auth", tags=["auth"])
-
-
-@_auth_alias_router.get("/status")
-async def auth_status_alias():
-    """Unified auth status — always JWT mode."""
-    return {"mode": "jwt", "enabled": True}
-
-
-router.include_router(_auth_alias_router)
-
-from .department import router as department_router
-
-router.include_router(department_router)
-
-# File library — optional, only when MinIO is configured
-from ...constant import EnvVarLoader
-
-if EnvVarLoader.get_str("AIWORK_MINIO_ENDPOINT", "").strip():
-    from ...file_library import is_minio_available
-    if is_minio_available():
-        from .file_library import router as file_library_router
-        router.include_router(file_library_router)
-
-        # Presale template library — same conditions as file library
-        from .presale_template import router as presale_template_router
-        router.include_router(presale_template_router)
-
-    # LLM output files — gated on MinIO endpoint (same as file library).
-    # The MinIO client is initialised at startup (Phase 1.5), NOT at import
-    # time, so we only check the endpoint + SDK here.
-    if is_minio_available():
-        from .llm_output import router as llm_output_router
-        router.include_router(llm_output_router)
-
-# RAG Knowledge Base — optional, when pgvector is configured
-if EnvVarLoader.get_str("AIWORK_PGVECTOR_DB_URL", "").strip():
-    from ...rag import is_rag_available
-    if is_rag_available():
-        from .rag import router as rag_router
-        router.include_router(rag_router)
+router.include_router(git_router)
+router.include_router(coding_project_router)
+router.include_router(access_control_router)
+router.include_router(provider_oauth_router)
 
 
 def create_agent_scoped_router() -> APIRouter:

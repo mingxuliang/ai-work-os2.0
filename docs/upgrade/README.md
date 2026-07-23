@@ -2,37 +2,21 @@
 
 ## 一句话
 
-**保留现有 AIWork Console UI，Agent 内核切换为 QwenPaw 2.0，自研企业能力通过 `aiwork-enterprise` 插件层挂载。**
+**AIWork Console UI + 同仓分叉的 QwenPaw 2.0 内核（`src/aiwork`）+ 内嵌企业能力。**
+
+> 旧的 `packages/aiwork-enterprise` overlay 已废弃；见 [09-upstream-sync.md](09-upstream-sync.md)。
 
 ## 快速启动（开发机）
 
-> 务必使用独立 venv（见 [07-venv-recommendation.md](07-venv-recommendation.md)），
-> 勿与 AIWork 1.x 的 agentscope 1.0 混装。
-
 ```powershell
-# 0) 独立环境
-python -m venv .venv-qw2
-.\.venv-qw2\Scripts\Activate.ps1
-
-# 1) 安装内核 + 企业层
-pip install "qwenpaw==2.0.0.post3"
-pip install -e .\packages\aiwork-enterprise[kernel]
-$env:PYTHONPATH="$PWD\src;$PWD\packages\aiwork-enterprise"
-
-# 2) 配置
+python -m venv .venv-aiwork
+.\.venv-aiwork\Scripts\Activate.ps1
+pip install -e .
 copy deploy\qw2\.env.qw2 .env   # 并改掉密钥
-
-# 3) 构建 AIWork Console UI
 cd console; npm ci; npm run build; cd ..
-
-# 4) 迁移种子
-python deploy\qw2\migrate_qw2.py --all
-
-# 5) 启动
-$env:AIWORK_KERNEL="qwenpaw2"
 $env:AIWORK_CONSOLE_STATIC_DIR="$PWD\console\dist"
-$env:QWENPAW_CONSOLE_STATIC_DIR="$PWD\console\dist"
-python -m aiwork_enterprise.cli app
+aiwork enterprise-doctor --governance-test
+aiwork app --host 127.0.0.1 --port 8088
 # 或: deploy\qw2\start_qw2.ps1
 ```
 

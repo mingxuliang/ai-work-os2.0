@@ -21,18 +21,12 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 import logging
 import os
-import re
-import secrets
-import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any, Dict, Tuple
-from urllib.parse import quote, urlencode
 
-import httpx
 import segno
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from fastapi import HTTPException, Request
@@ -77,12 +71,11 @@ def generate_qrcode_image(scan_url: str) -> str:
         buf = io.BytesIO()
         qr_code.save(buf, kind="png", scale=6, border=2)
         return base64.b64encode(buf.getvalue()).decode()
-    except Exception:
-        logger.exception("QR code image generation failed")
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
-            detail="QR code image generation failed",
-        )
+            detail=f"QR code image generation failed: {exc}",
+        ) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +106,7 @@ class WeChatQRCodeAuthHandler(QRCodeAuthHandler):
         return _DEFAULT_BASE_URL
 
     async def fetch_qrcode(self, request: Request) -> QRCodeResult:
+        import httpx
         from ..channels.wechat.client import ILinkClient
 
         base_url = await self._get_base_url(request)
@@ -120,29 +114,10 @@ class WeChatQRCodeAuthHandler(QRCodeAuthHandler):
         await client.start()
         try:
             qr_data = await client.get_bot_qrcode()
-        except httpx.ConnectError as exc:
-            logger.error(
-                "WeChat qrcode: connect failed base_url=%s: %s", base_url, exc,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail="Cannot connect to WeChat iLink server. Check network.",
-            ) from exc
-        except httpx.TimeoutException as exc:
-            logger.error(
-                "WeChat qrcode: timed out base_url=%s: %s", base_url, exc,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail="WeChat iLink server did not respond in time.",
-            ) from exc
         except (httpx.HTTPError, Exception) as exc:
-            logger.exception(
-                "WeChat qrcode: fetch failed base_url=%s", base_url,
-            )
             raise HTTPException(
                 status_code=502,
-                detail="WeChat QR code fetch failed.",
+                detail=f"WeChat QR code fetch failed: {exc}",
             ) from exc
         finally:
             await client.stop()
@@ -151,10 +126,6 @@ class WeChatQRCodeAuthHandler(QRCodeAuthHandler):
         qrcode_img_content = qr_data.get("qrcode_img_content", "")
 
         if not qrcode and not qrcode_img_content:
-            logger.error(
-                "WeChat qrcode: empty qrcode/img, data keys=%s",
-                list(qr_data.keys()),
-            )
             raise HTTPException(
                 status_code=502,
                 detail="WeChat returned empty QR code data",
@@ -171,6 +142,7 @@ class WeChatQRCodeAuthHandler(QRCodeAuthHandler):
         return QRCodeResult(scan_url=scan_url, poll_token=qrcode)
 
     async def poll_status(self, token: str, request: Request) -> PollResult:
+        import httpx
         from ..channels.wechat.client import ILinkClient
 
         base_url = await self._get_base_url(request)
@@ -178,29 +150,10 @@ class WeChatQRCodeAuthHandler(QRCodeAuthHandler):
         await client.start()
         try:
             data = await client.get_qrcode_status(token)
-        except httpx.ConnectError as exc:
-            logger.error(
-                "WeChat poll: connect failed base_url=%s: %s", base_url, exc,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail="Cannot connect to WeChat iLink.",
-            ) from exc
-        except httpx.TimeoutException as exc:
-            logger.error(
-                "WeChat poll: timed out base_url=%s: %s", base_url, exc,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail="WeChat poll timed out.",
-            ) from exc
         except (httpx.HTTPError, Exception) as exc:
-            logger.exception(
-                "WeChat poll: failed base_url=%s", base_url,
-            )
             raise HTTPException(
                 status_code=502,
-                detail="WeChat status check failed.",
+                detail=f"WeChat status check failed: {exc}",
             ) from exc
         finally:
             await client.stop()
@@ -226,6 +179,12 @@ class WecomQRCodeAuthHandler(QRCodeAuthHandler):
     """QR code auth handler for WeCom bot authorization."""
 
     async def fetch_qrcode(self, request: Request) -> QRCodeResult:
+        import json
+        import re
+        import secrets
+        import time
+        import httpx
+
         state = secrets.token_urlsafe(16)
         gen_url = (
             f"{_WECOM_AUTH_ORIGIN}/ai/qc/gen"
@@ -235,138 +194,40 @@ class WecomQRCodeAuthHandler(QRCodeAuthHandler):
 
         try:
             async with httpx.AsyncClient(
-                timeout=httpx.Timeout(15.0, connect=10.0),
+                timeout=15,
                 follow_redirects=True,
-                headers={
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                        "AppleWebKit/537.36 (KHTML, like Gecko) "
-                        "Chrome/131.0.0.0 Safari/537.36"
-                    ),
-                    "Accept": "text/html,application/xhtml+xml",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                },
             ) as client:
                 resp = await client.get(gen_url)
                 resp.raise_for_status()
                 html = resp.text
-        except httpx.ConnectError as exc:
-            logger.error(
-                "WeCom qrcode: cannot connect to %s: %s",
-                _WECOM_AUTH_ORIGIN, exc,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    "Cannot connect to WeCom server. "
-                    "Check network / DNS / firewall."
-                ),
-            ) from exc
-        except httpx.TimeoutException as exc:
-            logger.error("WeCom qrcode: request timed out: %s", exc)
-            raise HTTPException(
-                status_code=502,
-                detail="WeCom server did not respond in time.",
-            ) from exc
-        except httpx.HTTPStatusError as exc:
-            logger.error(
-                "WeCom qrcode: bad status %s: %s",
-                exc.response.status_code, exc,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=f"WeCom server returned HTTP {exc.response.status_code}.",
-            ) from exc
         except Exception as exc:
-            logger.exception("WeCom qrcode: fetch failed")
             raise HTTPException(
                 status_code=502,
-                detail="WeCom auth page fetch failed.",
+                detail=f"WeCom auth page fetch failed: {exc}",
             ) from exc
 
-        # Locate the JSON object assigned to window.settings.  We use a
-        # brace-depth counter instead of a greedy / non-greedy regex so
-        # that later <script> blocks containing braces don't get pulled in.
-        prefix_match = re.search(r"window\.settings\s*=\s*", html)
-        if not prefix_match:
-            logger.error(
-                "WeCom qrcode: window.settings not found in HTML "
-                "(len=%d, preview=%s)",
-                len(html), html[:500],
-            )
+        settings_match = re.search(
+            r"window\.settings\s*=\s*(\{[^<]+\})",
+            html,
+        )
+        if not settings_match:
             raise HTTPException(
                 status_code=502,
                 detail="Failed to parse WeCom auth page settings",
             )
 
-        start = prefix_match.end()
-        if start >= len(html) or html[start] != "{":
-            logger.error(
-                "WeCom qrcode: expected '{' after window.settings =, "
-                "got char=%r at pos=%d",
-                html[start] if start < len(html) else "EOF", start,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail="Failed to parse WeCom auth page settings",
-            )
-
-        # Walk forward counting brace depth to find the matching '}'.
-        depth = 0
-        in_string = False
-        escape = False
-        end = start
-        for i in range(start, len(html)):
-            ch = html[i]
-            if in_string:
-                if escape:
-                    escape = False
-                elif ch == "\\":
-                    escape = True
-                elif ch == '"':
-                    in_string = False
-            else:
-                if ch == '"':
-                    in_string = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        end = i + 1  # include the closing brace
-                        break
-        else:
-            logger.error(
-                "WeCom qrcode: unclosed JSON object in settings (depth=%d)",
-                depth,
-            )
-            raise HTTPException(
-                status_code=502,
-                detail="Failed to parse WeCom auth page settings",
-            )
-
-        raw_json = html[start:end]
         try:
-            settings = json.loads(raw_json)
+            settings = json.loads(settings_match.group(1))
         except json.JSONDecodeError as exc:
-            logger.error(
-                "WeCom qrcode: invalid JSON in settings (len=%d, "
-                "preview=%s): %s",
-                len(raw_json), raw_json[:200], exc,
-            )
             raise HTTPException(
                 status_code=502,
-                detail="Failed to parse WeCom auth page settings JSON",
+                detail=f"Failed to parse WeCom settings JSON: {exc}",
             ) from exc
 
         scode = settings.get("scode", "")
         auth_url = settings.get("auth_url", "")
 
         if not scode or not auth_url:
-            logger.error(
-                "WeCom qrcode: empty scode/auth_url in settings: %s",
-                settings,
-            )
             raise HTTPException(
                 status_code=502,
                 detail="WeCom returned empty scode or auth_url",
@@ -375,35 +236,22 @@ class WecomQRCodeAuthHandler(QRCodeAuthHandler):
         return QRCodeResult(scan_url=auth_url, poll_token=scode)
 
     async def poll_status(self, token: str, request: Request) -> PollResult:
+        from urllib.parse import quote
+        import httpx
+
         query_url = (
-            f"{_WECOM_AUTH_ORIGIN}/ai/qc/query_result"
-            f"?scode={quote(token)}"
+            f"{_WECOM_AUTH_ORIGIN}/ai/qc/query_result" f"?scode={quote(token)}"
         )
 
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0, connect=10.0),
-            ) as client:
+            async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(query_url)
                 resp.raise_for_status()
                 result = resp.json()
-        except httpx.ConnectError as exc:
-            logger.error("WeCom poll: connect failed: %s", exc)
-            raise HTTPException(
-                status_code=502,
-                detail="Cannot connect to WeCom.",
-            ) from exc
-        except httpx.TimeoutException as exc:
-            logger.error("WeCom poll: timed out: %s", exc)
-            raise HTTPException(
-                status_code=502,
-                detail="WeCom poll timed out.",
-            ) from exc
         except Exception as exc:
-            logger.exception("WeCom poll: failed")
             raise HTTPException(
                 status_code=502,
-                detail="WeCom status check failed.",
+                detail=f"WeCom status check failed: {exc}",
             ) from exc
 
         data = result.get("data", {})
@@ -423,7 +271,7 @@ class WecomQRCodeAuthHandler(QRCodeAuthHandler):
 # ---------------------------------------------------------------------------
 
 _DINGTALK_API_BASE = "https://oapi.dingtalk.com"
-_DINGTALK_SOURCE = "AIWORK"
+_DINGTALK_SOURCE = "QWENPAW"
 
 
 class DingtalkQRCodeAuthHandler(QRCodeAuthHandler):
@@ -436,6 +284,8 @@ class DingtalkQRCodeAuthHandler(QRCodeAuthHandler):
     """
 
     async def fetch_qrcode(self, request: Request) -> QRCodeResult:
+        import httpx
+
         try:
             async with httpx.AsyncClient(timeout=15) as client:
                 # Step 1: init – obtain a one-time nonce
@@ -496,13 +346,14 @@ class DingtalkQRCodeAuthHandler(QRCodeAuthHandler):
         except HTTPException:
             raise
         except Exception as exc:
-            logger.exception("DingTalk qrcode: fetch failed")
             raise HTTPException(
                 status_code=502,
-                detail="DingTalk QR code fetch failed.",
+                detail=f"DingTalk QR code fetch failed: {exc}",
             ) from exc
 
     async def poll_status(self, token: str, request: Request) -> PollResult:
+        import httpx
+
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.post(
@@ -512,10 +363,9 @@ class DingtalkQRCodeAuthHandler(QRCodeAuthHandler):
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as exc:
-            logger.exception("DingTalk poll: failed")
             raise HTTPException(
                 status_code=502,
-                detail="DingTalk status check failed.",
+                detail=f"DingTalk status check failed: {exc}",
             ) from exc
 
         status = data.get("status", "WAITING")
@@ -600,6 +450,9 @@ class FeishuQRCodeAuthHandler(QRCodeAuthHandler):
 
     async def fetch_qrcode(self, request: Request) -> QRCodeResult:
         """Initiate device authorization flow and return QR code."""
+        import httpx
+        from urllib.parse import urlencode
+
         domain = await self._get_domain(request)
         base_url = self._get_accounts_domain(domain)
         endpoint = base_url + _FEISHU_REGISTER_ENDPOINT
@@ -644,7 +497,8 @@ class FeishuQRCodeAuthHandler(QRCodeAuthHandler):
 
                 device_code = begin_data.get("device_code", "")
                 verification_uri = begin_data.get(
-                    "verification_uri_complete", "",
+                    "verification_uri_complete",
+                    "",
                 )
 
                 if not device_code or not verification_uri:
@@ -667,14 +521,16 @@ class FeishuQRCodeAuthHandler(QRCodeAuthHandler):
         except HTTPException:
             raise
         except Exception as exc:
-            logger.exception("Feishu qrcode: fetch failed")
             raise HTTPException(
                 status_code=502,
-                detail="Feishu QR code fetch failed.",
+                detail=f"Feishu QR code fetch failed: {exc}",
             ) from exc
 
     async def poll_status(self, token: str, request: Request) -> PollResult:
         """Poll authorization status using device_code."""
+        import httpx
+        from urllib.parse import urlencode
+
         domain = await self._get_domain(request)
         base_url = self._get_accounts_domain(domain)
         endpoint = base_url + _FEISHU_REGISTER_ENDPOINT
@@ -684,7 +540,10 @@ class FeishuQRCodeAuthHandler(QRCodeAuthHandler):
                 resp = await client.post(
                     endpoint,
                     content=urlencode(
-                        {"action": "poll", "device_code": token},
+                        {
+                            "action": "poll",
+                            "device_code": token,
+                        },
                     ),
                     headers={
                         "Content-Type": "application/x-www-form-urlencoded",
@@ -692,10 +551,9 @@ class FeishuQRCodeAuthHandler(QRCodeAuthHandler):
                 )
                 data = resp.json()
         except Exception as exc:
-            logger.exception("Feishu poll: failed")
             raise HTTPException(
                 status_code=502,
-                detail="Feishu status check failed.",
+                detail=f"Feishu status check failed: {exc}",
             ) from exc
 
         # Check for success
@@ -766,6 +624,8 @@ def _decrypt_secret(
 
 def _encode_poll_token(task_id: str, aes_key: str) -> str:
     """Combine task_id and AES key into a stateless token."""
+    import json
+
     payload = json.dumps(
         {"task_id": task_id, "key": aes_key},
         separators=(",", ":"),
@@ -775,6 +635,8 @@ def _encode_poll_token(task_id: str, aes_key: str) -> str:
 
 def _decode_poll_token(token: str) -> Tuple[str, str]:
     """Decode token back to (task_id, aes_key)."""
+    import json
+
     try:
         decoded = base64.urlsafe_b64decode(token.encode()).decode()
         data = json.loads(decoded)
@@ -797,6 +659,9 @@ class QQQRCodeAuthHandler(QRCodeAuthHandler):
     _FRONTEND_PATH: str = "/qqbot/openclaw/connect.html"
 
     async def fetch_qrcode(self, request: Request) -> QRCodeResult:
+        import httpx
+        from urllib.parse import urlencode
+
         aes_key = _generate_bind_key()
         url = f"https://{self._PORTAL_HOST}{self._CREATE_PATH}"
 
@@ -810,10 +675,9 @@ class QQQRCodeAuthHandler(QRCodeAuthHandler):
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as exc:
-            logger.exception("QQ qrcode: create_bind_task failed")
             raise HTTPException(
                 status_code=502,
-                detail="QQ create_bind_task failed.",
+                detail=f"QQ create_bind_task failed: {exc}",
             ) from exc
 
         if data.get("retcode") != 0:
@@ -837,13 +701,15 @@ class QQQRCodeAuthHandler(QRCodeAuthHandler):
         return QRCodeResult(scan_url=scan_url, poll_token=poll_token)
 
     async def poll_status(self, token: str, request: Request) -> PollResult:
+        import httpx
+
         try:
             task_id, aes_key = _decode_poll_token(token)
-        except ValueError:
+        except ValueError as exc:
             raise HTTPException(
                 status_code=400,
                 detail="Invalid poll token",
-            )
+            ) from exc
 
         url = f"https://{self._PORTAL_HOST}{self._POLL_PATH}"
 
@@ -857,10 +723,9 @@ class QQQRCodeAuthHandler(QRCodeAuthHandler):
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as exc:
-            logger.exception("QQ poll: poll_bind_result failed")
             raise HTTPException(
                 status_code=502,
-                detail="QQ poll_bind_result failed.",
+                detail=f"QQ poll_bind_result failed: {exc}",
             ) from exc
 
         retcode = data.get("retcode")

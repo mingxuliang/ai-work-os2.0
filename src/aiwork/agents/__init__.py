@@ -1,32 +1,32 @@
 # -*- coding: utf-8 -*-
-"""AiWork Agents Module.
+"""QwenPaw Agents Module.
 
 This module provides the main agent implementation and supporting utilities
 for building AI agents with tools, skills, and memory management.
 
 Public API:
-- AiWorkAgent: Main agent class
+- QwenPawAgent: Main agent class
 - create_model_and_formatter: Factory for creating models and formatters
 
 Example:
-    >>> from aiwork.agents import AiWorkAgent, create_model_and_formatter
-    >>> agent = AiWorkAgent()
+    >>> from aiwork.agents import QwenPawAgent, create_model_and_formatter
+    >>> agent = QwenPawAgent()
     >>> # Or with custom model
     >>> model, formatter = create_model_and_formatter()
 """
 
-# AiWorkAgent is lazy-loaded so that importing agents.skills_manager (e.g.
+# QwenPawAgent is lazy-loaded so that importing agents.skill_system (e.g.
 # from CLI init_cmd/skills_cmd) does not pull react_agent, agentscope, tools.
 # pylint: disable=undefined-all-variable
-__all__ = ["AiWorkAgent", "create_model_and_formatter"]
+__all__ = ["QwenPawAgent", "create_model_and_formatter"]
 
 
 def __getattr__(name: str):
     """Lazy load heavy imports."""
-    if name == "AiWorkAgent":
-        from .react_agent import AiWorkAgent
+    if name == "QwenPawAgent":
+        from .react_agent import QwenPawAgent
 
-        return AiWorkAgent
+        return QwenPawAgent
     if name == "create_model_and_formatter":
         from .model_factory import create_model_and_formatter
 

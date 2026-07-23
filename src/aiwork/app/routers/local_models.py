@@ -5,11 +5,12 @@ from __future__ import annotations
 
 from typing import Any, List, Optional
 
-from agentscope_runtime.engine.schemas.exception import (
-    AppBaseException,
-)
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel, Field
+
+from aiwork.exceptions import (
+    AppBaseException,
+)
 
 from ...local_models import (
     DownloadSource,
@@ -23,12 +24,12 @@ from ...providers.provider_manager import ProviderManager
 router = APIRouter(prefix="/local-models", tags=["local-models"])
 
 
-def get_local_model_manager(request: Request) -> LocalModelManager:
+async def get_local_model_manager(request: Request) -> LocalModelManager:
     """Helper to get the LocalModelManager instance from app state."""
     return request.app.state.local_model_manager
 
 
-def get_provider_manager(request: Request) -> ProviderManager:
+async def get_provider_manager(request: Request) -> ProviderManager:
     """Helper to get the ProviderManager instance from app state."""
     return request.app.state.provider_manager
 
@@ -38,13 +39,13 @@ def _clear_local_runtime_provider_state(
 ) -> None:
     """Reset persisted provider state for the managed local runtime."""
     provider_manager.update_provider(
-        "aiwork-local",
+        "qwenpaw-local",
         {
             "base_url": "",
             "extra_models": [],
         },
     )
-    provider_manager.clear_active_model("aiwork-local")
+    provider_manager.clear_active_model("qwenpaw-local")
 
 
 class ServerStatus(BaseModel):
@@ -306,14 +307,14 @@ async def start_llamacpp_server(
 
     try:
         provider_manager.update_provider(
-            "aiwork-local",
+            "qwenpaw-local",
             {
                 "base_url": f"http://127.0.0.1:{setup_result.port}/v1",
                 "extra_models": [setup_result.model_info],
             },
         )
         await provider_manager.activate_model(
-            provider_id="aiwork-local",
+            provider_id="qwenpaw-local",
             model_id=setup_result.model_info.id,
         )
     except (ValueError, AppBaseException) as exc:
@@ -471,7 +472,7 @@ async def configure_local_model_settings(
 
     if payload.generate_kwargs is not None:
         provider_manager.update_provider(
-            "aiwork-local",
+            "qwenpaw-local",
             {
                 "generate_kwargs": payload.generate_kwargs,
             },

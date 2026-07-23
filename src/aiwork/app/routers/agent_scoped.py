@@ -4,6 +4,7 @@
 This provides agent isolation by injecting agentId into request.state,
 allowing downstream APIs to access the correct agent context.
 """
+
 from fastapi import APIRouter, Request
 from starlette.middleware.base import (
     BaseHTTPMiddleware,
@@ -22,7 +23,7 @@ class AgentContextMiddleware(BaseHTTPMiddleware):
     ) -> Response:
         """Extract agentId and root_session_id from path/headers."""
         import logging
-        from ..agent_context import set_current_agent_id, set_current_user_id
+        from ..agent_context import set_current_agent_id
 
         logger = logging.getLogger(__name__)
         agent_id = None
@@ -45,11 +46,6 @@ class AgentContextMiddleware(BaseHTTPMiddleware):
         # Set agent_id in context variable for use by runners
         if agent_id:
             set_current_agent_id(agent_id)
-
-        # Set user_id in context variable for per-user workspace isolation
-        user_id = getattr(request.state, "user_id", None)
-        if user_id:
-            set_current_user_id(str(user_id))
 
         # Extract X-Root-Session-Id header for cross-session approval routing
         root_session_id = request.headers.get("X-Root-Session-Id")
@@ -74,20 +70,22 @@ def create_agent_scoped_router() -> APIRouter:
     Returns:
         APIRouter with all sub-routers mounted under /{agentId}/
     """
+    from .agent_status import router as agent_status_router
     from .skills import router as skills_router
     from .tools import router as tools_router
     from .config import router as config_router
     from .mcp import router as mcp_router
+    from .mcp_oauth import router as mcp_oauth_router
     from .workspace import router as workspace_router
     from ..crons.api import router as cron_router
-    from ..runner.api import router as chats_router
+    from ..chats.api import router as chats_router
     from .console import router as console_router
     from .plugins import router as plugins_router
-    from .plan import router as plan_router
 
     router = APIRouter(prefix="/agents/{agentId}", tags=["agent-scoped"])
 
     # Include all agent-specific sub-routers (they keep their own prefixes)
+    # /agents/{agentId}/agent-status -> agent_status_router
     # /agents/{agentId}/chats/* -> chats_router
     # /agents/{agentId}/config/* -> config_router (channels, heartbeat)
     # /agents/{agentId}/cron/* -> cron_router
@@ -95,15 +93,16 @@ def create_agent_scoped_router() -> APIRouter:
     # /agents/{agentId}/skills/* -> skills_router
     # /agents/{agentId}/tools/* -> tools_router
     # /agents/{agentId}/workspace/* -> workspace_router
+    router.include_router(agent_status_router)
     router.include_router(chats_router)
     router.include_router(config_router)
     router.include_router(cron_router)
+    router.include_router(mcp_oauth_router)
     router.include_router(mcp_router)
     router.include_router(skills_router)
     router.include_router(tools_router)
     router.include_router(workspace_router)
     router.include_router(console_router)
     router.include_router(plugins_router)
-    router.include_router(plan_router)
 
     return router
