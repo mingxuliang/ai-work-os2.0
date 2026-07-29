@@ -187,6 +187,7 @@ def mount_enterprise(
         "spa_reorder": False,
         "memory": None,
         "channels": None,
+        "auto_model": False,
     }
 
     if include_security_headers:
@@ -217,6 +218,14 @@ def mount_enterprise(
         summary["department"] = mount_department(app)
         summary["minio"] = mount_minio_routers(app)
         summary["rag"] = mount_rag(app)
+
+    try:
+        from aiwork.providers.auto_model import auto_model_enabled
+
+        summary["auto_model"] = auto_model_enabled()
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("auto_model status skipped: %s", exc)
+        summary["auto_model"] = False
 
     summary["spa_reorder"] = prioritize_api_before_spa(app) > 0
 

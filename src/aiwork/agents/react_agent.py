@@ -772,6 +772,16 @@ class QwenPawAgent(CodingModeMixin, Agent):
                 if self._is_media_block(block):
                     total_stripped += 1
                     stripped_this_message += 1
+                    try:
+                        from .utils.media_ocr import ocr_block_to_text
+
+                        ocr_text = ocr_block_to_text(block)
+                    except Exception:
+                        ocr_text = None
+                    if ocr_text:
+                        new_content.append(
+                            TextBlock(type="text", text=ocr_text),
+                        )
                     continue
 
                 btype = (

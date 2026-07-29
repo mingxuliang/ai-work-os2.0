@@ -59,6 +59,7 @@ export const KEY_TO_PATH: Record<string, string> = {
   "material-center": "/material-center",
   "knowledge-base": "/knowledge-base",
   users: "/users",
+  "my-team": "/my-team",
 };
 
 export const KEY_TO_LABEL: Record<string, string> = {

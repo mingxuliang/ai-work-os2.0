@@ -96,8 +96,58 @@
 
 /* Agent 卡片区：不再套一层白 Card，直接与页面灰底衔接 */
 .agentGridSection {
-  padding: 8px 20px 28px;
+  padding: 4px 20px 28px;
   background: transparent;
+}
+
+/* ---- Category filter tabs ---- */
+.agentsHeader {
+  align-items: flex-start !important;
+  padding: 22px 20px 16px !important;
+  border-bottom: 0 !important;
+}
+
+.categoryTabBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 2px 20px 18px;
+}
+
+.categoryTab {
+  flex-shrink: 0;
+  min-height: 34px;
+  padding: 7px 14px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: rgba(15, 23, 42, 0.62);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
+}
+
+.categoryTab:hover {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(15, 23, 42, 0.08);
+  color: rgba(15, 23, 42, 0.86);
+}
+
+.categoryTabActive {
+  background: rgba(37, 99, 235, 0.11);
+  border-color: rgba(37, 99, 235, 0.16);
+  color: rgb(37, 99, 235);
+  font-weight: 650;
+}
+
+.categoryTabActive:hover {
+  background: rgba(37, 99, 235, 0.14);
+  color: rgb(37, 99, 235);
 }
 
 .listLoadAlert {
@@ -137,12 +187,12 @@
 }
 
 .pageDescription {
-  margin: 0;
-  padding: 0 20px 6px;
-  max-width: 720px;
-  font-size: 13px;
-  line-height: 1.5;
-  color: rgba(0, 0, 0, 0.45);
+  margin: 7px 0 0;
+  padding: 0;
+  max-width: 760px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: rgba(15, 23, 42, 0.52);
 }
 
 .cardDragGrip {
@@ -182,43 +232,151 @@
 
 .agentCardHero {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  align-items: flex-start;
+  gap: 12px;
   padding-right: 40px;
+  min-height: 52px;
 }
 
-.agentCardIconCube {
+/* Portrait flush with card chrome — circular avatar like digital-employee cards */
+.agentCardAvatar {
   flex-shrink: 0;
-  width: 52px;
-  height: 52px;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.08);
+}
+
+.agentCardAvatarImg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 15%;
 }
 
 .agentCardTitles {
   min-width: 0;
   flex: 1;
+  padding-top: 1px;
 }
 
 .agentCardName {
-  font-size: 16px !important;
+  font-size: 15px !important;
   font-weight: 600 !important;
   line-height: 1.3 !important;
-  margin: 0 0 6px !important;
+  margin: 0 !important;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentCardIdLine {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: rgba(0, 0, 0, 0.4);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agentCategoryBadge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 2px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.5;
+  background: rgba(37, 99, 235, 0.08);
+  color: rgb(37, 99, 235);
+}
+
+.agentCardStatusLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.statusDot {
+  flex-shrink: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.statusDotOn {
+  background: #22c55e;
+  box-shadow: 0 0 0 2px rgba(34, 197, 94, 0.18);
+}
+
+.statusDotOff {
+  background: rgba(0, 0, 0, 0.25);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.06);
+}
+
+.statusText {
+  color: rgba(0, 0, 0, 0.5);
 }
 
 .agentCardTagSpacer {
-  margin-left: 6px !important;
+  margin-left: 2px !important;
 }
 
-.agentCardLines {
+.agentCardCustomTags {
   margin-top: 10px;
 }
 
-.agentCardLine {
+.agentCardDesc {
+  margin-top: 12px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: rgba(0, 0, 0, 0.5);
+  min-height: 2.4em;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
-  margin-top: 4px;
+}
+
+.agentCardModelLine {
+  margin-top: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Keep all Agent Team card actions on one compact row. */
+.agentCardActionsCompact {
+  flex-wrap: nowrap !important;
+  overflow: hidden;
+}
+
+.agentCardActionSpace {
+  display: flex !important;
+  flex-wrap: nowrap !important;
+  width: 100%;
+
+  :global(.qwenpaw-btn) {
+    flex: 1 1 0;
+    min-width: 0;
+    height: 26px;
+    padding-inline: 5px;
+    font-size: 11px;
+  }
+
+  :global(.qwenpaw-btn .anticon) {
+    margin-inline-end: 3px;
+  }
 }
 
 .dragHandleButton {
@@ -338,9 +496,59 @@
     color: rgba(255, 255, 255, 0.45);
   }
 
+  .categoryTab {
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .categoryTab:hover {
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.8);
+  }
+
+  .categoryTabActive {
+    background: rgba(59, 130, 246, 0.22);
+    color: #93c5fd;
+  }
+
+  .categoryTabActive:hover {
+    background: rgba(59, 130, 246, 0.28);
+    color: #93c5fd;
+  }
+
   .cardDragGrip {
     background: rgba(255, 255, 255, 0.06);
     color: rgba(255, 255, 255, 0.55);
+  }
+
+  .agentCardAvatar {
+    background: rgba(255, 255, 255, 0.06);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
+  }
+
+  .agentCardIdLine {
+    color: rgba(255, 255, 255, 0.4);
+  }
+
+  .agentCategoryBadge {
+    background: rgba(59, 130, 246, 0.18);
+    color: #93c5fd;
+  }
+
+  .statusText {
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .statusDotOff {
+    background: rgba(255, 255, 255, 0.3);
+    box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.08);
+  }
+
+  .agentCardDesc {
+    color: rgba(255, 255, 255, 0.5);
+  }
+
+  .agentCardModelLine {
+    color: rgba(255, 255, 255, 0.45);
   }
 
   .cardDragGrip:hover {
@@ -436,4 +644,30 @@
 :global(.dark-mode .ant-btn-link[disabled]) {
   color: rgba(255, 255, 255, 0.25) !important;
   opacity: 1 !important;
+}
+
+/* ── Summon button ── */
+
+.summonBtn {
+  border-color: rgba(59, 130, 246, 0.35) !important;
+  color: rgb(59, 130, 246) !important;
+  background: transparent !important;
+  transition: all 0.2s;
+
+  &:hover {
+    background: rgba(59, 130, 246, 0.08) !important;
+    border-color: rgb(59, 130, 246) !important;
+  }
+}
+
+.summonBtnActive {
+  border-color: rgba(74, 222, 128, 0.4) !important;
+  color: rgb(22, 163, 74) !important;
+  background: rgba(74, 222, 128, 0.08) !important;
+  transition: all 0.2s;
+
+  &:hover {
+    background: rgba(74, 222, 128, 0.15) !important;
+    border-color: rgb(22, 163, 74) !important;
+  }
 }

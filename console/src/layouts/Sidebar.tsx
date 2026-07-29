@@ -187,6 +187,12 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       label: t("nav.agents"),
     },
     {
+      key: "my-team",
+      icon: <SparkUserGroupLine size={18} />,
+      path: "/my-team",
+      label: t("nav.myTeam", "我的AI团队"),
+    },
+    {
       key: "models",
       icon: <SparkModePlazaLine size={18} />,
       path: "/models",
@@ -375,6 +381,11 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           key: "agents",
           label: collapsed ? null : t("nav.agents"),
           icon: <SparkAgentLine size={16} />,
+        },
+        {
+          key: "my-team",
+          label: collapsed ? null : t("nav.myTeam", "我的AI团队"),
+          icon: <SparkUserGroupLine size={16} />,
         },
         {
           key: "models",

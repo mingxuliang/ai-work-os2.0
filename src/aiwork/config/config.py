@@ -1409,6 +1409,13 @@ class AgentProfileRef(BaseModel):
         default=False,
         description="Whether agent is pinned in agent selectors",
     )
+    user_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Owner user ID for multi-user isolation. "
+            "None means shared/public agent visible to all users."
+        ),
+    )
 
 
 class PlanConfig(BaseModel):
@@ -1454,6 +1461,13 @@ class AgentProfileConfig(BaseModel):
     template_id: Optional[str] = Field(
         default=None,
         description="Builtin template used when this agent was created",
+    )
+    user_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Owner user ID for multi-user isolation. "
+            "None means shared/public agent."
+        ),
     )
 
     # Agent-specific configurations
@@ -2129,6 +2143,108 @@ class SkillScannerConfig(BaseModel):
         default_factory=list,
         description="Skills that bypass security scanning.",
     )
+    sandbox_required_severities: List[str] = Field(
+        default_factory=lambda: ["HIGH", "CRITICAL"],
+        description=(
+            "Finding severities that trigger requires_sandbox "
+            "recommendations when paired with risky categories."
+        ),
+    )
+
+
+class ExecutionSandboxConfig(BaseModel):
+    """Execution sandbox settings under ``security.execution_sandbox``."""
+
+    enabled: bool = Field(
+        default=False,
+        description="Enable path-jail sandbox enforcement for tool execution.",
+    )
+    backend: Literal["off", "local", "docker"] = Field(
+        default="local",
+        description="Sandbox backend: local path jail, docker per-call, or off.",
+    )
+    use_user_subdir: bool = Field(
+        default=True,
+        description=(
+            "When true, use workspaces/{agent_id}/users/{user_id}/ "
+            "as sandbox root for non-default users."
+        ),
+    )
+    fail_closed: bool = Field(
+        default=True,
+        description="When docker backend is unavailable, refuse shell execution.",
+    )
+    fallback_backend: Literal["off", "local"] = Field(
+        default="local",
+        description="Fallback when docker backend fails and fail_closed is false.",
+    )
+    docker_image: str = Field(
+        default="aiwork-sandbox:latest",
+        description="Docker image for per-call tool execution.",
+    )
+    docker_network: Literal["none", "bridge"] = Field(
+        default="none",
+        description="Docker network mode for sandbox containers.",
+    )
+    docker_memory: str = Field(
+        default="512m",
+        description="Memory limit for sandbox containers.",
+    )
+    docker_cpus: str = Field(
+        default="1",
+        description="CPU limit for sandbox containers.",
+    )
+    docker_pids_limit: int = Field(
+        default=64,
+        ge=1,
+        description="Process limit for sandbox containers.",
+    )
+    docker_timeout_seconds: int = Field(
+        default=120,
+        ge=1,
+        description="Default timeout for docker-backed shell execution.",
+    )
+    skill_sandbox_enforcement: Literal["off", "warn", "strict"] = Field(
+        default="warn",
+        description=(
+            "Policy when a skill requires sandbox: off, warn, or strict."
+        ),
+    )
+    auto_tag_risky_skills: bool = Field(
+        default=True,
+        description=(
+            "When true, scanner recommendations write requires_sandbox "
+            "into skill manifests."
+        ),
+    )
+    session_container_enabled: bool = Field(
+        default=False,
+        description="Reuse long-lived Docker containers per chat session.",
+    )
+    session_idle_seconds: int = Field(
+        default=900,
+        ge=60,
+        description="Idle time before session containers are destroyed.",
+    )
+    session_max_containers: int = Field(
+        default=32,
+        ge=1,
+        description="Global cap on concurrent session containers (LRU evict).",
+    )
+    sandbox_readonly_roots: List[str] = Field(
+        default_factory=lambda: ["skills"],
+        description=(
+            "Workspace-relative directories readable (but not writable) "
+            "while sandbox is active."
+        ),
+    )
+    allow_enabled_skill_dirs: bool = Field(
+        default=True,
+        description=(
+            "When true, enabled skill directories are added to readonly "
+            "roots for the current request."
+        ),
+    )
 
 
 class SecurityConfig(BaseModel):
@@ -2138,6 +2254,9 @@ class SecurityConfig(BaseModel):
     file_guard: FileGuardConfig = Field(default_factory=FileGuardConfig)
     skill_scanner: SkillScannerConfig = Field(
         default_factory=SkillScannerConfig,
+    )
+    execution_sandbox: ExecutionSandboxConfig = Field(
+        default_factory=ExecutionSandboxConfig,
     )
     sandbox_enabled: bool = Field(
         default=False,

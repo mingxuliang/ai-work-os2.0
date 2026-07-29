@@ -100,6 +100,23 @@ async def get_agent_for_request(
             detail=f"Agent '{target_agent_id}' is disabled",
         )
 
+    # Multi-user access: logged-in users may use shared agents and their own.
+    # Private agents owned by others are blocked (CRUD ownership is stricter).
+    from .routers.agents import (
+        _get_jwt_user_id,
+        _normalize_user_id,
+        _request_is_admin,
+    )
+
+    current_user_id = await _get_jwt_user_id(request)
+    if current_user_id and not _request_is_admin(request):
+        owner = _normalize_user_id(getattr(agent_ref, "user_id", None))
+        if owner is not None and owner != current_user_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Not authorized to access this agent",
+            )
+
     # Get MultiAgentManager
     if not hasattr(request.app.state, "multi_agent_manager"):
         raise HTTPException(

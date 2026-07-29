@@ -210,6 +210,13 @@ class CronJobSpec(BaseModel):
 
     runtime: JobRuntimeSpec = Field(default_factory=JobRuntimeSpec)
     meta: Dict[str, Any] = Field(default_factory=dict)
+    owner_user_id: Optional[str] = Field(
+        default=None,
+        description=(
+            "Owner user ID for multi-user isolation. "
+            "None means shared/system job visible to all users."
+        ),
+    )
 
     @model_validator(mode="after")
     def _validate_task_type_fields(self) -> "CronJobSpec":

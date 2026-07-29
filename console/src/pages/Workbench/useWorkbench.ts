@@ -6,6 +6,7 @@ import { chatApi } from "../../api/modules/chat";
 import type { AgentSummary } from "../../api/types/agents";
 import type { ChatSpec } from "../../api/types/chat";
 import type { AgentStatsSummary } from "../../api/types/agentStats";
+import { getEffectiveUserId } from "../../utils/authUsername";
 
 export interface AgentStatus {
   status: "idle" | "running" | "disabled";
@@ -51,7 +52,7 @@ export function useWorkbench(): WorkbenchData {
   // ── Fetch chats ────────────────────────────────────────────────────────
   const refreshChats = async () => {
     try {
-      const chats = await chatApi.listChats();
+      const chats = await chatApi.listChats({ user_id: getEffectiveUserId() });
       setRecentChats(buildRecentChats(chats));
     } catch {
       // keep previous value
@@ -79,7 +80,7 @@ export function useWorkbench(): WorkbenchData {
         const [agentRes, statsRes, chatsRes] = await Promise.allSettled([
           agentsApi.listAgents(),
           agentStatsApi.getAgentStats({ start_date: todayStr(), end_date: todayStr() }),
-          chatApi.listChats(),
+          chatApi.listChats({ user_id: getEffectiveUserId() }),
         ]);
 
         const agentList =

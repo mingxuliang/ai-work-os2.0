@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from collections.abc import Awaitable, Callable
 from typing import Optional
 
+from .user_scope import set_scoped_chat_user_id
 from .models import (
     BatchArchiveResult,
     BatchFailure,
@@ -68,6 +69,8 @@ class ChatManager:
         Returns:
             List of chat specifications
         """
+        if user_id:
+            set_scoped_chat_user_id(user_id)
         async with self._lock:
             logger.debug(
                 f"list_chats: repo path={self._repo.path}, "
@@ -113,6 +116,7 @@ class ChatManager:
         Returns:
             Chat specification (existing or newly created)
         """
+        set_scoped_chat_user_id(user_id)
         async with self._lock:
             # Try to find existing by session_id
             logger.debug(
@@ -164,6 +168,7 @@ class ChatManager:
         Returns:
             Chat spec
         """
+        set_scoped_chat_user_id(spec.user_id)
         async with self._lock:
             await self._repo.upsert_chat(spec)
             return spec
@@ -437,6 +442,8 @@ class ChatManager:
             Returns most recently updated chat if multiple matches exist.
             O(N) scan of active chats. Future optimization: add index.
         """
+        if user_id:
+            set_scoped_chat_user_id(user_id)
         async with self._lock:
             chats = await self._repo.filter_chats(channel=channel)
             # Single pass: match session_id, and when a user_id is given,

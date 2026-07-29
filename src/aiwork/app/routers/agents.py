@@ -15,7 +15,6 @@ from aiwork.exceptions import (
     AppBaseException,
 )
 
-from ...agents.utils.file_handling import read_text_file_with_encoding_fallback
 from ..utils import schedule_agent_reload
 from ...config.config import (
     AgentProfileConfig,
@@ -39,6 +38,119 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
+# ---------------------------------------------------------------------------
+# JWT user extraction & ownership helpers (AIWork 1.0 parity)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_user_id(value) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+async def _get_jwt_user_id(request: Request | None) -> str | None:
+    """Return authenticated user_id from JWT, with fallback decoding.
+
+    Tries ``request.state.user_id`` first (set by middleware). Falls back to
+    decoding the ``Authorization`` header when middleware state did not
+    propagate (known Starlette BaseHTTPMiddleware / ``call_next`` issue).
+    """
+    if request is None:
+        return None
+    jwt_user = _normalize_user_id(getattr(request.state, "user_id", None))
+    if jwt_user:
+        return jwt_user
+
+    from ..auth_jwt.jwt_utils import decode_token as jwt_decode_token
+    from ..auth_jwt.middleware import JWTAuthMiddleware
+    from ..auth_jwt.redis_client import get_session_user_info
+
+    token = JWTAuthMiddleware._extract_token(request)
+    if not token:
+        return None
+    try:
+        payload = await jwt_decode_token(token)
+    except Exception:
+        return None
+    if not payload:
+        return None
+
+    jti = payload.get("jti", "")
+    if jti:
+        user_info = await get_session_user_info(jti)
+        if user_info:
+            return _normalize_user_id(
+                user_info.get("user_id") or user_info.get("username"),
+            )
+
+    return _normalize_user_id(payload.get("sub") or payload.get("username"))
+
+
+def _request_is_admin(request: Request | None) -> bool:
+    if request is None:
+        return False
+    roles = getattr(request.state, "roles", None) or []
+    return "admin" in {str(r).lower() for r in roles}
+
+
+async def _resolve_is_admin(request: Request | None, current_user_id: str | None) -> bool:
+    """Resolve admin status with DB fallback.
+
+    ``_request_is_admin`` relies on middleware-propagated ``request.state.roles``
+    which can be absent in some Starlette setups.  Fall back to a DB role check
+    (same pattern used in ``create_agent``) when state-based check returns False.
+    """
+    if _request_is_admin(request):
+        return True
+    if not current_user_id:
+        return False
+    try:
+        from ..auth_jwt.database import get_session_factory
+        from ..auth_jwt.user_service import get_user_by_id, user_has_role
+
+        user_id_int = int(current_user_id)
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            user = await get_user_by_id(session, user_id_int)
+            if user is not None and user_has_role(user, "admin"):
+                return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
+def _check_agent_ownership(
+    agent_ref,
+    user_id: str | None,
+    *,
+    is_admin: bool = False,
+) -> None:
+    """Raise 403 if user does not own the agent.
+
+    Allow access if:
+    - caller has admin role (can operate any agent, including shared)
+    - agent's user_id matches the current user
+
+    Shared agents (user_id is None) can only be operated by admins;
+    regular users only have permission to operate their own agents.
+    """
+    if is_admin:
+        return
+    owner = _normalize_user_id(getattr(agent_ref, "user_id", None))
+    if (
+        user_id is not None
+        and owner is not None
+        and owner == _normalize_user_id(user_id)
+    ):
+        return
+    raise HTTPException(
+        status_code=403,
+        detail="Not authorized to access this agent",
+    )
+
+
 class AgentSummary(BaseModel):
     """Agent summary information."""
 
@@ -50,6 +162,7 @@ class AgentSummary(BaseModel):
     pinned: bool
     startup_status: AgentStartupStatus
     active_model: ModelSlotConfig | None = None
+    user_id: str | None = None
 
 
 class AgentListResponse(BaseModel):
@@ -156,33 +269,6 @@ def _is_valid_display_order(config, agent_ids: list[str]) -> bool:
     return _group_agent_order(config, agent_ids) == agent_ids
 
 
-def _read_profile_description(workspace_dir: str) -> str:
-    """Read description from PROFILE.md if exists."""
-    try:
-        profile_path = Path(workspace_dir) / "PROFILE.md"
-        if not profile_path.exists():
-            return ""
-
-        content = read_text_file_with_encoding_fallback(profile_path).strip()
-        lines = []
-        in_identity = False
-
-        for line in content.split("\n"):
-            if line.strip().startswith("## 身份") or line.strip().startswith(
-                "## Identity",
-            ):
-                in_identity = True
-                continue
-            if in_identity:
-                if line.strip().startswith("##"):
-                    break
-                if line.strip() and not line.strip().startswith("#"):
-                    lines.append(line.strip())
-
-        return " ".join(lines)[:200] if lines else ""
-    except Exception:  # noqa: E722
-        return ""
-
 
 @router.get(
     "",
@@ -191,16 +277,30 @@ def _read_profile_description(workspace_dir: str) -> str:
     description="Get list of all configured agents",
 )
 async def list_agents(request: Request = None) -> AgentListResponse:
-    """List all configured agents."""
+    """List configured agents with user isolation.
+
+    Non-admin users only see agents they own and shared agents
+    (those without a user_id). Admin users see all agents.
+    """
     config = load_config()
     manager = (
         _get_multi_agent_manager(request) if request is not None else None
     )
     ordered_agent_ids = _display_agent_order(config)
 
+    current_user_id = await _get_jwt_user_id(request)
+    is_admin = _request_is_admin(request)
+
     agents = []
     for agent_id in ordered_agent_ids:
         agent_ref = config.agents.profiles[agent_id]
+        owner = _normalize_user_id(getattr(agent_ref, "user_id", None))
+
+        # Non-admin logged-in users only see own + shared agents
+        if not is_admin and current_user_id:
+            if owner is not None and owner != current_user_id:
+                continue
+
         enabled = getattr(agent_ref, "enabled", True)
         pinned = agent_id == "default" or getattr(
             agent_ref,
@@ -218,14 +318,9 @@ async def list_agents(request: Request = None) -> AgentListResponse:
         )
         try:
             agent_config = load_agent_config(agent_id)
-            description = agent_config.description or ""
-
-            profile_desc = _read_profile_description(agent_ref.workspace_dir)
-            if profile_desc:
-                if description.strip():
-                    description = f"{description.strip()} | {profile_desc}"
-                else:
-                    description = profile_desc
+            # Card/list description: only the configured agent description.
+            # Do not merge PROFILE.md identity boilerplate (often placeholders).
+            description = (agent_config.description or "").strip()
 
             active_model = agent_config.active_model
 
@@ -239,6 +334,7 @@ async def list_agents(request: Request = None) -> AgentListResponse:
                     pinned=pinned,
                     startup_status=startup_status,
                     active_model=active_model,
+                    user_id=owner,
                 ),
             )
         except Exception:  # noqa: E722
@@ -251,6 +347,7 @@ async def list_agents(request: Request = None) -> AgentListResponse:
                     enabled=enabled,
                     pinned=pinned,
                     startup_status=startup_status,
+                    user_id=owner,
                 ),
             )
 
@@ -264,24 +361,63 @@ async def list_agents(request: Request = None) -> AgentListResponse:
 )
 async def reorder_agents(
     reorder_request: ReorderAgentsRequest = Body(...),
+    request: Request = None,
 ) -> dict:
-    """Persist the full ordered list of agent IDs."""
+    """Persist the ordered list of agent IDs.
+
+    Admin must submit the full configured agent set.
+    Non-admin users submit only the agents they can see (own + shared);
+    other users' private agents keep their relative positions.
+    """
     config = load_config()
     configured_ids = list(config.agents.profiles.keys())
+    current_user_id = await _get_jwt_user_id(request)
+    is_admin = _request_is_admin(request)
 
     if len(reorder_request.agent_ids) != len(set(reorder_request.agent_ids)):
         raise HTTPException(
             status_code=400,
-            detail="Each configured agent ID must appear exactly once.",
+            detail="Each agent ID must appear exactly once.",
         )
 
-    if set(reorder_request.agent_ids) != set(configured_ids):
-        raise HTTPException(
-            status_code=400,
-            detail="Each configured agent ID must appear exactly once.",
-        )
+    if is_admin or not current_user_id:
+        if set(reorder_request.agent_ids) != set(configured_ids):
+            raise HTTPException(
+                status_code=400,
+                detail="Each configured agent ID must appear exactly once.",
+            )
+        new_order = list(reorder_request.agent_ids)
+    else:
+        visible_ids = [
+            aid
+            for aid in configured_ids
+            if _normalize_user_id(
+                getattr(config.agents.profiles[aid], "user_id", None),
+            )
+            in (None, current_user_id)
+        ]
+        if set(reorder_request.agent_ids) != set(visible_ids):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Each visible agent ID (owned or shared) must appear "
+                    "exactly once."
+                ),
+            )
+        # Merge: replace visible slots in current order with the new sequence
+        visible_iter = iter(reorder_request.agent_ids)
+        current_order = _normalized_agent_order(config)
+        new_order = []
+        for aid in current_order:
+            owner = _normalize_user_id(
+                getattr(config.agents.profiles[aid], "user_id", None),
+            )
+            if owner in (None, current_user_id):
+                new_order.append(next(visible_iter))
+            else:
+                new_order.append(aid)
 
-    if not _is_valid_display_order(config, reorder_request.agent_ids):
+    if not _is_valid_display_order(config, new_order):
         raise HTTPException(
             status_code=400,
             detail=(
@@ -290,7 +426,7 @@ async def reorder_agents(
             ),
         )
 
-    config.agents.agent_order = list(reorder_request.agent_ids)
+    config.agents.agent_order = new_order
     save_config(config)
 
     return {"success": True, "agent_ids": config.agents.agent_order}
@@ -304,6 +440,7 @@ async def reorder_agents(
 async def set_agent_pinned(
     agentId: str = PathParam(...),
     pinned: bool = Body(..., embed=True),
+    request: Request = None,
 ) -> dict:
     """Persist an agent's pinned state without changing enabled state."""
     config = load_config()
@@ -321,6 +458,12 @@ async def set_agent_pinned(
         )
 
     agent_ref = config.agents.profiles[agentId]
+    current_user_id = await _get_jwt_user_id(request)
+    _check_agent_ownership(
+        agent_ref,
+        current_user_id,
+        is_admin=_request_is_admin(request),
+    )
     if agentId != "default":
         agent_ref.pinned = pinned
         config.agents.agent_order = _display_agent_order(config)
@@ -339,8 +482,27 @@ async def set_agent_pinned(
     summary="Get agent details",
     description="Get complete configuration for a specific agent",
 )
-async def get_agent(agentId: str = PathParam(...)) -> AgentProfileConfig:
+async def get_agent(
+    request: Request,
+    agentId: str = PathParam(...),
+) -> AgentProfileConfig:
     """Get agent configuration."""
+    config = load_config()
+
+    if agentId not in config.agents.profiles:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Agent '{agentId}' not found",
+        )
+
+    agent_ref = config.agents.profiles[agentId]
+    current_user_id = await _get_jwt_user_id(request)
+    _check_agent_ownership(
+        agent_ref,
+        current_user_id,
+        is_admin=_request_is_admin(request),
+    )
+
     try:
         agent_config = load_agent_config(agentId)
         return agent_config
@@ -426,6 +588,26 @@ async def create_agent(
         except Exception:
             pass
 
+    current_user_id = await _get_jwt_user_id(http_request)
+
+    # Admin-created agents are shared (user_id=None); verify via DB roles.
+    is_admin = _request_is_admin(http_request)
+    if current_user_id and not is_admin:
+        try:
+            from ..auth_jwt.database import get_session_factory
+            from ..auth_jwt.user_service import get_user_by_id, user_has_role
+
+            user_id_int = int(current_user_id)
+            session_factory = get_session_factory()
+            async with session_factory() as session:
+                user = await get_user_by_id(session, user_id_int)
+                if user is not None and user_has_role(user, "admin"):
+                    is_admin = True
+        except (ValueError, Exception):
+            pass
+
+    bound_user_id = None if is_admin else current_user_id
+
     agent_config = AgentProfileConfig(
         id=new_id,
         name=request.name,
@@ -437,6 +619,7 @@ async def create_agent(
         heartbeat=HeartbeatConfig(),
         tools=ToolsConfig(),
         active_model=active_model,
+        user_id=bound_user_id,
     )
 
     _initialize_agent_workspace(
@@ -451,6 +634,7 @@ async def create_agent(
         id=new_id,
         workspace_dir=str(workspace_dir),
         enabled=True,
+        user_id=bound_user_id,
     )
 
     config.agents.profiles[new_id] = agent_ref
@@ -458,7 +642,12 @@ async def create_agent(
     save_config(config)
     save_agent_config(new_id, agent_config)
 
-    logger.info(f"Created new agent: {new_id} (name={request.name})")
+    logger.info(
+        "Created new agent: %s (name=%s, user_id=%s)",
+        new_id,
+        request.name,
+        bound_user_id,
+    )
 
     if http_request is not None:
         manager = _get_multi_agent_manager(http_request)
@@ -487,11 +676,19 @@ async def update_agent(
             detail=f"Agent '{agentId}' not found",
         )
 
+    agent_ref = config.agents.profiles[agentId]
+    current_user_id = await _get_jwt_user_id(request)
+    _check_agent_ownership(
+        agent_ref,
+        current_user_id,
+        is_admin=await _resolve_is_admin(request, current_user_id),
+    )
+
     existing_config = load_agent_config(agentId)
 
     update_data = agent_config.model_dump(exclude_unset=True)
     for key, value in update_data.items():
-        if key != "id":
+        if key not in ("id", "user_id"):
             setattr(existing_config, key, value)
 
     existing_config.id = agentId
@@ -524,6 +721,14 @@ async def delete_agent(
             status_code=400,
             detail="Cannot delete the default agent",
         )
+
+    agent_ref = config.agents.profiles[agentId]
+    current_user_id = await _get_jwt_user_id(request)
+    _check_agent_ownership(
+        agent_ref,
+        current_user_id,
+        is_admin=await _resolve_is_admin(request, current_user_id),
+    )
 
     manager = _get_multi_agent_manager(request)
     if manager.is_agent_startup_in_progress(agentId):
@@ -566,6 +771,13 @@ async def toggle_agent_enabled(
         )
 
     agent_ref = config.agents.profiles[agentId]
+    current_user_id = await _get_jwt_user_id(request)
+    _check_agent_ownership(
+        agent_ref,
+        current_user_id,
+        is_admin=await _resolve_is_admin(request, current_user_id),
+    )
+
     manager = _get_multi_agent_manager(request)
 
     if not enabled and manager.is_agent_startup_in_progress(agentId):

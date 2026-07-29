@@ -48,6 +48,13 @@ def _get_last_user_text(msgs: List[Any]) -> str | None:
     return None
 
 
+
+def _guess_file_media_type(url: str, filename: str | None = None) -> str:
+    """Guess MIME for uploaded files; avoid blank octet-stream when possible."""
+    name = filename or urlparse(url).path or url
+    guessed, _ = mimetypes.guess_type(unquote(str(name)))
+    return guessed or "application/octet-stream"
+
 def _ensure_url_scheme(url: str) -> str:
     """Prepend ``file://`` when *url* is an absolute local path.
 
@@ -154,15 +161,19 @@ def _request_input_to_msgs(
             elif ctype == "file":
                 url = getattr(c, "file_url", None) or getattr(c, "url", None)
                 if url:
+                    file_name = getattr(c, "file_name", None)
                     url = _ensure_url_scheme(str(url))
                     try:
                         blocks.append(
                             DataBlock(
                                 source=URLSource(
                                     url=url,
-                                    media_type="application/octet-stream",
+                                    media_type=_guess_file_media_type(
+                                        url,
+                                        file_name,
+                                    ),
                                 ),
-                                name=getattr(c, "file_name", None),
+                                name=file_name,
                             ),
                         )
                     except Exception:

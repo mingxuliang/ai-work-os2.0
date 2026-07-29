@@ -34,6 +34,15 @@ from ..chats.title_generator import generate_and_update_title
 from ..utils import check_upload_size
 
 
+
+def _jwt_user_id_from_request(request: Request) -> str | None:
+    """Bind console chat identity to JWT user (hard isolation)."""
+    uid = getattr(request.state, "user_id", None)
+    if uid is None:
+        return None
+    s = str(uid).strip()
+    return s or None
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/console", tags=["console"])
@@ -203,6 +212,17 @@ async def post_console_chat(
         native_payload = _extract_session_and_payload(request_data)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+    # AIWORK_FORCE_JWT_USER — hard-bind chat bucket to authenticated user
+    try:
+        from ..chats.user_scope import set_scoped_chat_user_id
+        _jwt_uid = _jwt_user_id_from_request(request)
+        if _jwt_uid:
+            native_payload["sender_id"] = _jwt_uid
+            if isinstance(native_payload.get("meta"), dict):
+                native_payload["meta"]["user_id"] = _jwt_uid
+            set_scoped_chat_user_id(_jwt_uid)
+    except Exception:
+        logger.debug("JWT user bind skipped", exc_info=True)
     session_id = console_channel.resolve_session_id(
         sender_id=native_payload["sender_id"],
         channel_meta=native_payload["meta"],

@@ -57,13 +57,15 @@ function extractFilesFromOutput(output: unknown): FileInfo[] {
       if (!item || typeof item !== "object") return [];
       const entry = item as Record<string, unknown>;
 
-      // Content-item format: {type: "file", source: {type: "url", url: "..."}, filename: "..."}
-      if (entry.type === "file") {
+      // Content-item format: {type: "file"|"data", source: {type: "url", url: "..."}, filename/name: "..."}
+      // AgentScope 2.x send_file_to_user returns DataBlock (type: "data"), not type: "file".
+      if (entry.type === "file" || entry.type === "data") {
         const source = entry.source as Record<string, unknown> | undefined;
         const url = (typeof source?.url === "string" && source.url) ||
                     (typeof entry.url === "string" && entry.url) ||
                     (typeof entry.file_url === "string" && entry.file_url) ||
                     "";
+        if (!url && entry.type === "data") return [];
         const name = (entry.filename as string) ||
                      (entry.file_name as string) ||
                      (entry.name as string) ||
@@ -423,30 +425,52 @@ const SendFileToUserRenderer: React.FC<{ data: Record<string, unknown> }> = ({
       if (fromItemData.length > 0) return fromItemData;
     }
 
-    // 3) Check for FILE-type content items (Message path fallback)
-    for (const item of content) {
-      if (item?.type === "file") {
-        const url = item.file_url || "";
-        const name = item.file_name || item.fileName || "file";
-        const size = item.file_size;
+    // 3) Check for FILE/DATA-type content items (Message path fallback)
+    for (const item of content as Array<Record<string, unknown>>) {
+      if (item?.type === "file" || item?.type === "data") {
+        const source = item.source as Record<string, unknown> | undefined;
+        const url =
+          (typeof item.file_url === "string" && item.file_url) ||
+          (typeof source?.url === "string" && source.url) ||
+          (typeof item.url === "string" && item.url) ||
+          "";
+        const name =
+          (typeof item.file_name === "string" && item.file_name) ||
+          (typeof item.fileName === "string" && item.fileName) ||
+          (typeof item.name === "string" && item.name) ||
+          "file";
+        const size = typeof item.file_size === "number" ? item.file_size : undefined;
         if (url) return [{ url, name, size }];
-        return [{ url: "", name, size }];
+        if (item?.type === "file") return [{ url: "", name, size }];
       }
     }
 
     return [];
   }, [content]);
 
-  const fileCards = useMemo(
-    () =>
-      files.map((f, idx) => ({
-        id: `${f.url}-${f.name}-${idx}`,
+  const fileCards = useMemo(() => {
+    const inputPath =
+      typeof toolInput?.file_path === "string" ? toolInput.file_path : "";
+    const fallbackName = (() => {
+      const candidate = inputPath || files.find((f) => f.url)?.url || "";
+      try {
+        const decoded = decodeURIComponent(candidate);
+        return decoded.split(/[\\/]/).filter(Boolean).pop() || "file";
+      } catch {
+        return candidate.split(/[\\/]/).filter(Boolean).pop() || "file";
+      }
+    })();
+
+    return files.map((f, idx) => {
+      const name = !f.name || f.name === "file" ? fallbackName : f.name;
+      return {
+        id: `${f.url}-${name}-${idx}`,
         url: toDisplayUrl(f.url),
-        name: f.name,
+        name,
         size: f.size,
-      })),
-    [files],
-  );
+      };
+    });
+  }, [files, toolInput]);
 
   const hasFiles = fileCards.length > 0;
 

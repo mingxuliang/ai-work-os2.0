@@ -1,1 +1,0 @@
-import{aX as n,aZ as o}from"./ui-vendor-CrBP-qRZ.js";var g=n((t,e)=>{let a;return e==="sandbox"&&(a=o("#i"+t)),(e==="sandbox"?o(a.nodes()[0].contentDocument.body):o("body")).select(`[id="${t}"]`)},"getDiagramElement");export{g};

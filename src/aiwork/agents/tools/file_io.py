@@ -3,6 +3,7 @@
 # pylint: disable=line-too-long
 import os
 from pathlib import Path
+from urllib.parse import unquote
 from typing import Optional
 
 import aiofiles
@@ -47,19 +48,22 @@ def _resolve_file_path(file_path: str) -> str:
     """Resolve file path: use absolute path as-is,
     resolve relative path from current workspace or WORKING_DIR.
 
-    Args:
-        file_path: The input file path (absolute or relative).
-
-    Returns:
-        The resolved absolute file path as string.
+    Always ``unquote()`` first so percent-encoded non-ASCII paths
+    (from URLSource/AnyUrl) resolve to the real file on disk.
     """
-    path = Path(file_path).expanduser()
+    raw = unquote((file_path or "").strip())
+    if raw.startswith("file://"):
+        raw = raw[len("file://"):]
+        if len(raw) >= 3 and raw[0] == "/" and raw[2] == ":" and raw[1].isalpha():
+            raw = raw[1:]
+    path = Path(raw).expanduser()
     if path.is_absolute():
+        if path.exists():
+            return str(path)
+        # Fall back to original unquoted string even if missing (clearer error)
         return str(path)
-    else:
-        # Use current workspace_dir from context, fallback to WORKING_DIR
-        workspace_dir = get_current_workspace_dir() or WORKING_DIR
-        return str(workspace_dir / file_path)
+    workspace_dir = get_current_workspace_dir() or WORKING_DIR
+    return str(Path(workspace_dir) / raw)
 
 
 def _get_encoding_for_file(file_path: str) -> str:

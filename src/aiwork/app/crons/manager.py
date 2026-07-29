@@ -176,8 +176,11 @@ class CronManager(ManagerBase):
         http_path="/crons/jobs",
         slash_command="cron-list",
     )
-    async def list_jobs(self) -> list[CronJobSpec]:
-        return await self._repo.list_jobs()
+    async def list_jobs(
+        self,
+        owner_user_id: Optional[str] = None,
+    ) -> list[CronJobSpec]:
+        return await self._repo.list_jobs(owner_user_id=owner_user_id)
 
     async def get_job(self, job_id: str) -> Optional[CronJobSpec]:
         return await self._repo.get_job(job_id)

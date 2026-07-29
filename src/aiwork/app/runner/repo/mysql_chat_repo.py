@@ -137,22 +137,23 @@ def patch_qwenpaw_chat_factory() -> bool:
 
     async def create_chat_service(ws, service):  # type: ignore[no-untyped-def]
         from aiwork.app.chats.manager import ChatManager
-        from aiwork.app.chats.repo.json_repo import JsonChatRepository
+        from aiwork.app.chats.repo.user_bucket_repo import UserBucketChatRepository
+        from aiwork.app.enterprise_env import get_bool, get_env
 
         if service is not None:
             return await original(ws, service)
 
-        chats_path = str(ws.workspace_dir / "chats.json")
-        json_repo = JsonChatRepository(chats_path)
-        repo = MySQLChatRepository(
+        repo = UserBucketChatRepository(
             agent_id=getattr(ws, "agent_id", "default"),
             workspace_dir=ws.workspace_dir,
-            fallback=json_repo,
+            legacy_path=ws.workspace_dir / "chats.json",
+            enable_mysql=get_bool("AIWORK_CHAT_MYSQL", True),
+            db_url=get_env("AIWORK_JWT_DB_URL", ""),
         )
         cm = ChatManager(repo=repo)
         ws._service_manager.services["chat_manager"] = cm
         logger.info(
-            "ChatManager created with enterprise repo (agent=%s)",
+            "ChatManager created with user-bucket repo (agent=%s)",
             getattr(ws, "agent_id", "?"),
         )
         return cm

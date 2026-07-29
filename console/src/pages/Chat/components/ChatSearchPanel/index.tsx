@@ -9,6 +9,7 @@ import { useNavigate } from "react-router-dom";
 import { chatApi } from "../../../../api/modules/chat";
 import sessionApi from "../../sessionApi";
 import styles from "./index.module.less";
+import { getEffectiveUserId } from "../../../../utils/authUsername";
 
 interface ChatSearchPanelProps {
   open: boolean;
@@ -115,7 +116,7 @@ const ChatSearchPanel: React.FC<ChatSearchPanelProps> = ({ open, onClose }) => {
         const query = searchQuery.toLowerCase();
         const results: SearchResult[] = [];
 
-        const chats = await chatApi.listChats();
+        const chats = await chatApi.listChats({ user_id: getEffectiveUserId() });
         if (seq !== searchSeqRef.current) return;
 
         const validChats = chats.filter(

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="AI Work OS">
+  <defs>
+    <linearGradient id="faviconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3b82f6" />
+      <stop offset="100%" stop-color="#1d4ed8" />
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="10" fill="url(#faviconGrad)" />
+  <g
+    transform="translate(7,7) scale(0.75)"
+    fill="none"
+    stroke="#fff"
+    stroke-width="2.2"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+  >
+    <path d="M12 2a10 10 0 1 0 10 10" />
+    <path d="M12 8v4l2.5 2.5" />
+    <circle cx="18" cy="6" r="3" fill="#fff" stroke="none" />
+  </g>
+</svg>

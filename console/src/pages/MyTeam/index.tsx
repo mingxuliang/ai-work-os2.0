@@ -1,0 +1,372 @@
+import { useMemo, useState, useRef, useCallback } from "react";
+import { Alert, Button, Empty, Form } from "antd";
+import { useAppMessage } from "@/hooks/useAppMessage";
+import { PlusOutlined } from "@ant-design/icons";
+import { useTranslation } from "react-i18next";
+import { agentsApi } from "@/api/modules/agents";
+import { invalidateSkillCache, skillApi } from "@/api/modules/skill";
+import type {
+  AgentProfileConfig,
+  AgentSummary,
+  CreateAgentRequest,
+} from "@/api/types/agents";
+import { useAgentStore } from "@/stores/agentStore";
+import { useAgents } from "../Settings/Agents/useAgents";
+import { AgentCardGrid, AgentModal } from "../Settings/Agents/components";
+import { PageHeader } from "@/components/PageHeader";
+import { CopawWorkbenchShell } from "@/components/CopawWorkbenchShell";
+import { reorderAgents } from "../Settings/Agents/reorder";
+import {
+  loadAgentPresentation,
+  removeAgentPresentation,
+  saveAgentPresentation,
+} from "@/utils/agentPresentationStorage";
+import { DEFAULT_TEAM_ICON_KEY } from "../Settings/Agents/components/agentTeamIcons";
+import {
+  ALL_CATEGORY_KEY,
+  CATEGORY_OPTIONS,
+  DEFAULT_CATEGORY_KEY,
+} from "../Settings/Agents/components/agentCategories";
+import styles from "../Settings/Agents/index.module.less";
+
+export default function MyTeamPage() {
+  const { t, i18n } = useTranslation();
+  const {
+    agents,
+    loading,
+    error: agentsLoadError,
+    deleteAgent,
+    toggleAgent,
+    loadAgents,
+    setAgents,
+  } = useAgents();
+  const { selectedAgent, setSelectedAgent } = useAgentStore();
+  const [modalVisible, setModalVisible] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<AgentSummary | null>(null);
+  const [reordering, setReordering] = useState(false);
+  const [form] = Form.useForm();
+  const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
+  const installedSkillsRef = useRef<string[]>([]);
+  const [activeCategory, setActiveCategory] = useState<string>(ALL_CATEGORY_KEY);
+  const [teamTick, setTeamTick] = useState(0);
+  const { message } = useAppMessage();
+
+  // Only show summoned agents
+  const summonedAgents = useMemo(
+    () => agents.filter((a) => loadAgentPresentation(a.id).summoned),
+    [agents, teamTick],
+  );
+
+  const filteredAgents = useMemo(() => {
+    if (activeCategory === ALL_CATEGORY_KEY) return summonedAgents;
+    return summonedAgents.filter(
+      (agent) => loadAgentPresentation(agent.id).category === activeCategory,
+    );
+  }, [summonedAgents, activeCategory]);
+
+  const handleCreate = () => {
+    setEditingAgent(null);
+    form.resetFields();
+    form.setFieldsValue({
+      workspace_dir: "",
+      active_model_provider: undefined,
+      active_model_model: undefined,
+      team_icon: DEFAULT_TEAM_ICON_KEY,
+      team_tags: [],
+      team_category: DEFAULT_CATEGORY_KEY,
+    });
+    setSelectedSkills([]);
+    installedSkillsRef.current = [];
+    setModalVisible(true);
+  };
+
+  const handleEdit = async (agent: AgentSummary) => {
+    try {
+      setSelectedSkills([]);
+      installedSkillsRef.current = [];
+      invalidateSkillCache({ agentId: agent.id });
+      const config = await agentsApi.getAgent(agent.id);
+      const preset = loadAgentPresentation(agent.id);
+      setEditingAgent(agent);
+      form.setFieldsValue({
+        ...config,
+        active_model_provider: config.active_model?.provider_id || undefined,
+        active_model_model: config.active_model?.model || undefined,
+        team_icon: preset.iconKey,
+        team_tags: preset.tags,
+        team_category: preset.category,
+      });
+      setModalVisible(true);
+    } catch (error) {
+      console.error("Failed to load agent config:", error);
+      message.error(t("agent.loadConfigFailed"));
+    }
+  };
+
+  /** 取消召唤：适用于非本人创建（他人/共享）的 agent，仅从本页移除，不删除真实 agent */
+  const handleRemoveFromTeam = (agentId: string) => {
+    saveAgentPresentation(agentId, { summoned: false });
+    setTeamTick((n) => n + 1);
+    message.success(t("myTeam.removeSuccess"));
+  };
+
+  /** 真实删除：仅适用于在「我的AI团队」中自己新建的 agent */
+  const handleDelete = async (agentId: string) => {
+    try {
+      await deleteAgent(agentId);
+      removeAgentPresentation(agentId);
+      if (selectedAgent === agentId) {
+        setSelectedAgent("default");
+        message.info(t("agent.switchedToDefault"));
+      }
+    } catch {
+      message.error(t("agent.deleteFailed"));
+    }
+  };
+
+  const handleToggle = async (agentId: string, currentEnabled: boolean) => {
+    const newEnabled = !currentEnabled;
+    try {
+      await toggleAgent(agentId, newEnabled);
+      if (!newEnabled && selectedAgent === agentId) {
+        setSelectedAgent("default");
+        message.info(t("agent.switchedToDefault"));
+      }
+    } catch {
+      // Error already handled in hook
+    }
+  };
+
+  const handleInstalledSkillsLoaded = useCallback((skills: string[]) => {
+    installedSkillsRef.current = skills;
+  }, []);
+
+  const handleSubmit = async () => {
+    try {
+      const values = await form.validateFields();
+      const workspaceRaw = values.workspace_dir;
+      const workspace_dir =
+        typeof workspaceRaw === "string"
+          ? workspaceRaw.trim() || undefined
+          : workspaceRaw;
+
+      const providerId = values.active_model_provider;
+      const modelId = values.active_model_model;
+      const active_model =
+        providerId && modelId
+          ? { provider_id: providerId, model: modelId }
+          : null;
+
+      const {
+        active_model_provider: _p,
+        active_model_model: _m,
+        team_icon,
+        team_tags,
+        team_category,
+        ...rest
+      } = values;
+      let payload = {
+        ...rest,
+        workspace_dir,
+        active_model,
+      } as AgentProfileConfig;
+
+      if (!editingAgent) {
+        const rawId = payload.id;
+        const idTrim = typeof rawId === "string" ? rawId.trim() : "";
+        if (idTrim) {
+          payload = { ...payload, id: idTrim };
+        } else {
+          const { id: _omitId, ...noIdPayload } = payload;
+          payload = noIdPayload as AgentProfileConfig;
+        }
+      }
+
+      if (editingAgent) {
+        const previousInstalledSkills = installedSkillsRef.current;
+        const newSkills = selectedSkills.filter(
+          (skill) => !previousInstalledSkills.includes(skill),
+        );
+        for (const skill of newSkills) {
+          await skillApi.downloadSkillPoolSkill({
+            skill_name: skill,
+            targets: [{ workspace_id: editingAgent.id }],
+          });
+        }
+        await agentsApi.updateAgent(editingAgent.id, payload);
+        saveAgentPresentation(editingAgent.id, {
+          iconKey: typeof team_icon === "string" ? team_icon : DEFAULT_TEAM_ICON_KEY,
+          tags: Array.isArray(team_tags) ? team_tags : [],
+          category: typeof team_category === "string" ? team_category : DEFAULT_CATEGORY_KEY,
+          origin: "myTeam",
+          summoned: true,
+        });
+        installedSkillsRef.current = [
+          ...previousInstalledSkills,
+          ...newSkills.filter((s) => !previousInstalledSkills.includes(s)),
+        ];
+        invalidateSkillCache({ agentId: editingAgent.id });
+        message.success(t("agent.updateSuccess"));
+      } else {
+        const body: CreateAgentRequest = {
+          ...payload,
+          language: i18n.language,
+          skill_names: selectedSkills,
+        };
+        const result = await agentsApi.createAgent(body);
+        saveAgentPresentation(result.id, {
+          iconKey: typeof team_icon === "string" ? team_icon : DEFAULT_TEAM_ICON_KEY,
+          tags: Array.isArray(team_tags) ? team_tags : [],
+          category: typeof team_category === "string" ? team_category : DEFAULT_CATEGORY_KEY,
+          origin: "myTeam",
+          summoned: true,
+        });
+        message.success(`${t("agent.createSuccess")} (ID: ${result.id})`);
+      }
+
+      setModalVisible(false);
+      setTeamTick((n) => n + 1);
+      await loadAgents();
+    } catch (error: any) {
+      console.error("Failed to save agent:", error);
+      if (editingAgent) {
+        invalidateSkillCache({ agentId: editingAgent.id });
+      }
+      message.error(error.message || t("agent.saveFailed"));
+    }
+  };
+
+  const handleReorder = async (activeId: string, overId: string) => {
+    const nextAgents = reorderAgents(agents, activeId, overId);
+    if (nextAgents === agents) return;
+    const previousAgents = agents;
+    setAgents(nextAgents);
+    setReordering(true);
+    try {
+      await agentsApi.reorderAgents(nextAgents.map((a) => a.id));
+      message.success(t("agent.reorderSuccess"));
+    } catch (error) {
+      console.error("Failed to reorder agents:", error);
+      setAgents(previousAgents);
+      message.error(t("agent.reorderFailed"));
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  return (
+    <CopawWorkbenchShell>
+      <div className={styles.agentsPage}>
+        <PageHeader
+          current={t("myTeam.title")}
+          className={styles.agentsHeader}
+          subRow={
+            <p className={styles.pageDescription}>{t("myTeam.description")}</p>
+          }
+          extra={
+            <div className={styles.headerRight}>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleCreate}
+              >
+                {t("agent.create")}
+              </Button>
+            </div>
+          }
+        />
+
+        <div className={styles.categoryTabBar}>
+          <button
+            type="button"
+            className={`${styles.categoryTab} ${
+              activeCategory === ALL_CATEGORY_KEY ? styles.categoryTabActive : ""
+            }`}
+            onClick={() => setActiveCategory(ALL_CATEGORY_KEY)}
+          >
+            {t("agent.categoryAll")}
+          </button>
+          {CATEGORY_OPTIONS.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              className={`${styles.categoryTab} ${
+                activeCategory === opt.key ? styles.categoryTabActive : ""
+              }`}
+              onClick={() => setActiveCategory(opt.key)}
+            >
+              {t(opt.labelKey)}
+            </button>
+          ))}
+        </div>
+
+        <div className={styles.agentGridSection}>
+          {agentsLoadError ? (
+            <Alert
+              className={styles.listLoadAlert}
+              type="error"
+              showIcon
+              message={t("agent.loadFailed")}
+              description={
+                <>
+                  {agentsLoadError.message ? (
+                    <p className={styles.listLoadDetail}>
+                      {agentsLoadError.message}
+                    </p>
+                  ) : null}
+                  <p className={styles.listLoadHint}>
+                    {t("agent.loadListHint")}
+                  </p>
+                  <Button
+                    size="small"
+                    type="primary"
+                    loading={loading}
+                    onClick={() => void loadAgents()}
+                  >
+                    {t("agent.listRetry")}
+                  </Button>
+                </>
+              }
+            />
+          ) : null}
+
+          {!agentsLoadError && !loading && summonedAgents.length === 0 ? (
+            <div style={{ padding: "60px 0", textAlign: "center" }}>
+              <Empty
+                image={Empty.PRESENTED_IMAGE_SIMPLE}
+                description={
+                  <span style={{ fontSize: 14, color: "rgba(15,23,42,0.5)" }}>
+                    {t("myTeam.empty")}
+                  </span>
+                }
+              />
+            </div>
+          ) : (
+            <AgentCardGrid
+              agents={filteredAgents}
+              loading={loading}
+              reordering={reordering}
+              onEdit={handleEdit}
+              onDelete={handleDelete}
+              onRemoveFromTeam={handleRemoveFromTeam}
+              onToggle={handleToggle}
+              onReorder={handleReorder}
+              variant="myTeam"
+            />
+          )}
+        </div>
+
+        <AgentModal
+          open={modalVisible}
+          editingAgent={editingAgent}
+          form={form}
+          selectedSkills={selectedSkills}
+          onSelectedSkillsChange={setSelectedSkills}
+          onInstalledSkillsLoaded={handleInstalledSkillsLoaded}
+          onSave={handleSubmit}
+          onCancel={() => setModalVisible(false)}
+        />
+      </div>
+    </CopawWorkbenchShell>
+  );
+}

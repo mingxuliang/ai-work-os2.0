@@ -46,6 +46,7 @@ const OrgBuilderPage = lazyImportWithRetry("../../pages/OrgBuilder");
 const UsersPage = lazyImportWithRetry("../../pages/Settings/Users");
 const MaterialCenterPage = lazyImportWithRetry("../../pages/MaterialCenter");
 const KnowledgeBasePage = lazyImportWithRetry("../../pages/KnowledgeBase");
+const MyTeamPage = lazyImportWithRetry("../../pages/MyTeam");
 
 const { Content } = Layout;
 
@@ -79,6 +80,7 @@ const pathToKey: Record<string, string> = {
   "/users": "users",
   "/material-center": "material-center",
   "/knowledge-base": "knowledge-base",
+  "/my-team": "my-team",
 };
 
 export default function MainLayout() {
@@ -155,6 +157,7 @@ export default function MainLayout() {
                     path="/knowledge-base"
                     element={<KnowledgeBasePage />}
                   />
+                  <Route path="/my-team" element={<MyTeamPage />} />
                   {pluginRoutes.map((route) => (
                     <Route
                       key={route.path}

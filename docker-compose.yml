@@ -18,9 +18,17 @@ services:
       - .env
     volumes:
       # 映射 .aiwork 工作目录到容器的 /app/working
-      - ~/.aiwork:/app/working
+      - /home/tbc/.aiwork:/app/working
       # 映射 .aiwork.secret 敏感数据目录到容器的 /app/working.secret
-      - ~/.aiwork.secret:/app/working.secret
+      - /home/tbc/.aiwork.secret:/app/working.secret
       - aiwork-backups:/app/working.backups
       # 容器日志挂载到宿主机 ./logs，按天滚动（见 deploy/config/aiwork.logrotate）
       - ./logs:/app/logs
+
+    networks:
+      - default
+      - ai-hr_default
+
+networks:
+  ai-hr_default:
+    external: true

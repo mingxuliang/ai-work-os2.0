@@ -1,8 +1,9 @@
-import { useState, useRef, useCallback } from "react";
+import { useMemo, useState, useRef, useCallback } from "react";
 import { Alert, Button, Form } from "antd";
 import { useAppMessage } from "../../../hooks/useAppMessage";
 import { PlusOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
+import { useIsAdmin } from "../../../hooks/useCurrentUserRoles";
 import { agentsApi } from "../../../api/modules/agents";
 import { invalidateSkillCache, skillApi } from "../../../api/modules/skill";
 import type {
@@ -22,10 +23,16 @@ import {
   saveAgentPresentation,
 } from "@/utils/agentPresentationStorage";
 import { DEFAULT_TEAM_ICON_KEY } from "./components/agentTeamIcons";
+import {
+  ALL_CATEGORY_KEY,
+  CATEGORY_OPTIONS,
+  DEFAULT_CATEGORY_KEY,
+} from "./components/agentCategories";
 import styles from "./index.module.less";
 
 export default function AgentsPage() {
   const { t, i18n } = useTranslation();
+  const isAdmin = useIsAdmin();
   const {
     agents,
     loading,
@@ -42,7 +49,21 @@ export default function AgentsPage() {
   const [form] = Form.useForm();
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const installedSkillsRef = useRef<string[]>([]);
+  const [activeCategory, setActiveCategory] = useState<string>(ALL_CATEGORY_KEY);
   const { message } = useAppMessage();
+
+  // Agents created via "我的AI团队" belong to that page only, never shown here.
+  const visibleAgents = useMemo(
+    () => agents.filter((a) => loadAgentPresentation(a.id).origin !== "myTeam"),
+    [agents],
+  );
+
+  const filteredAgents = useMemo(() => {
+    if (activeCategory === ALL_CATEGORY_KEY) return visibleAgents;
+    return visibleAgents.filter(
+      (agent) => loadAgentPresentation(agent.id).category === activeCategory,
+    );
+  }, [visibleAgents, activeCategory]);
 
   const handleCreate = () => {
     setEditingAgent(null);
@@ -53,6 +74,7 @@ export default function AgentsPage() {
       active_model_model: undefined,
       team_icon: DEFAULT_TEAM_ICON_KEY,
       team_tags: [],
+      team_category: DEFAULT_CATEGORY_KEY,
     });
     setSelectedSkills([]);
     installedSkillsRef.current = [];
@@ -73,6 +95,7 @@ export default function AgentsPage() {
         active_model_model: config.active_model?.model || undefined,
         team_icon: preset.iconKey,
         team_tags: preset.tags,
+        team_category: preset.category,
       });
       setModalVisible(true);
     } catch (error) {
@@ -134,6 +157,7 @@ export default function AgentsPage() {
         active_model_model,
         team_icon,
         team_tags,
+        team_category,
         ...rest
       } = values;
       let payload = {
@@ -171,6 +195,11 @@ export default function AgentsPage() {
           iconKey:
             typeof team_icon === "string" ? team_icon : DEFAULT_TEAM_ICON_KEY,
           tags: Array.isArray(team_tags) ? team_tags : [],
+          category:
+            typeof team_category === "string"
+              ? team_category
+              : DEFAULT_CATEGORY_KEY,
+          origin: "team",
         });
         installedSkillsRef.current = [
           ...previousInstalledSkills,
@@ -191,6 +220,11 @@ export default function AgentsPage() {
           iconKey:
             typeof team_icon === "string" ? team_icon : DEFAULT_TEAM_ICON_KEY,
           tags: Array.isArray(team_tags) ? team_tags : [],
+          category:
+            typeof team_category === "string"
+              ? team_category
+              : DEFAULT_CATEGORY_KEY,
+          origin: "team",
         });
         message.success(`${t("agent.createSuccess")} (ID: ${result.id})`);
       }
@@ -232,23 +266,49 @@ export default function AgentsPage() {
     <CopawWorkbenchShell>
       <div className={styles.agentsPage}>
         <PageHeader
-          parent={t("agent.parent")}
           current={t("agent.agents")}
+          className={styles.agentsHeader}
           subRow={
             <p className={styles.pageDescription}>{t("agent.pageDescription")}</p>
           }
           extra={
-            <div className={styles.headerRight}>
-              <Button
-                type="primary"
-                icon={<PlusOutlined />}
-                onClick={handleCreate}
-              >
-                {t("agent.create")}
-              </Button>
-            </div>
+            isAdmin ? (
+              <div className={styles.headerRight}>
+                <Button
+                  type="primary"
+                  icon={<PlusOutlined />}
+                  onClick={handleCreate}
+                >
+                  {t("agent.create")}
+                </Button>
+              </div>
+            ) : undefined
           }
         />
+
+        <div className={styles.categoryTabBar}>
+          <button
+            type="button"
+            className={`${styles.categoryTab} ${
+              activeCategory === ALL_CATEGORY_KEY ? styles.categoryTabActive : ""
+            }`}
+            onClick={() => setActiveCategory(ALL_CATEGORY_KEY)}
+          >
+            {t("agent.categoryAll")}
+          </button>
+          {CATEGORY_OPTIONS.map((opt) => (
+            <button
+              key={opt.key}
+              type="button"
+              className={`${styles.categoryTab} ${
+                activeCategory === opt.key ? styles.categoryTabActive : ""
+              }`}
+              onClick={() => setActiveCategory(opt.key)}
+            >
+              {t(opt.labelKey)}
+            </button>
+          ))}
+        </div>
 
         <div className={styles.agentGridSection}>
           {agentsLoadError ? (
@@ -280,13 +340,15 @@ export default function AgentsPage() {
             />
           ) : null}
           <AgentCardGrid
-            agents={agents}
+            agents={filteredAgents}
             loading={loading}
             reordering={reordering}
             onEdit={handleEdit}
             onDelete={handleDelete}
             onToggle={handleToggle}
             onReorder={handleReorder}
+            variant="team"
+            isAdmin={isAdmin}
           />
         </div>
 

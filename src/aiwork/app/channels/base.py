@@ -1730,11 +1730,20 @@ class BaseChannel(ABC):
                     )
             if not emit_sse:
                 return []
+            # MUST set object/type recognized by console Builder.
+            # Payloads without object==response|message|content are treated as
+            # ERROR and render Bubble.Interrupted ("Answers have stopped").
             payload: Dict[str, Any] = {
-                "type": "turn_usage",
+                "object": "message",
+                "type": "heartbeat",
+                "id": "turn_usage",
+                "role": "assistant",
+                "status": "completed",
+                "content": [],
                 "session_id": session_id,
                 "usage": turn,
                 "context_usage": ctx,
+                "turn_usage": True,
             }
             return [
                 f"data: {json.dumps(payload, ensure_ascii=False)}\n\n",

@@ -153,6 +153,16 @@ def _strip_media_blocks_in_place(msgs: list[Msg]) -> int:
             if _is_media_block(block):
                 total_stripped += 1
                 stripped_this_message += 1
+                # Prefer OCR text over dropping image content entirely so
+                # text-only models can still use chat image attachments.
+                try:
+                    from .media_ocr import ocr_block_to_text
+
+                    ocr_text = ocr_block_to_text(block)
+                except Exception:
+                    ocr_text = None
+                if ocr_text:
+                    new_content.append(TextBlock(type="text", text=ocr_text))
                 continue
 
             # Handle tool_result with nested media (dict format)

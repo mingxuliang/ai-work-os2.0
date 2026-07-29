@@ -31,6 +31,7 @@ import { ApprovalCard } from "../../components/ApprovalCard/ApprovalCard";
 import { commandsApi } from "../../api/modules/commands";
 import { useApprovalContext } from "../../contexts/ApprovalContext";
 import { planApi } from "../../api/modules/plan";
+import SendFileToUserRenderer from "./components/SendFileToUserRenderer";
 
 interface ApprovalMessageData {
   requestId: string;
@@ -72,7 +73,7 @@ import {
   type RuntimeLoadingBridgeApi,
 } from "./utils";
 
-const CHAT_ATTACHMENT_MAX_MB = 10;
+const CHAT_ATTACHMENT_MAX_MB = 200;
 
 interface SessionInfo {
   session_id?: string;
@@ -1305,8 +1306,10 @@ export default function ChatPage() {
           });
         },
       },
-      customToolRenderConfig:
-        Object.keys(toolRenderConfig).length > 0 ? toolRenderConfig : undefined,
+      customToolRenderConfig: {
+        send_file_to_user: SendFileToUserRenderer,
+        ...toolRenderConfig,
+      },
       actions: {
         list: [
           {

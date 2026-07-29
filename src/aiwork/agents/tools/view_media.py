@@ -350,6 +350,30 @@ async def view_image(image_path: str) -> ToolChunk:
         probe_result = await _probe_multimodal_if_needed("image")
         if probe_result is not True:
             fallback_hint = _get_multimodal_fallback_hint("image", image_path)
+            # AIWORK_VIEW_IMAGE_OCR: attach OCR text so the model can still
+            # use image content without native vision.
+            try:
+                from ..utils.media_ocr import ocr_image_file, _url_to_local_path
+
+                local = _url_to_local_path(image_path)
+                if local is not None and local.is_file():
+                    ocr_text = ocr_image_file(local)
+                    if ocr_text:
+                        fallback_hint = (
+                            (fallback_hint or "")
+                            + "\n\n[OCR text extracted from image]\n"
+                            + ocr_text
+                        )
+                    else:
+                        fallback_hint = (
+                            (fallback_hint or "")
+                            + "\n\n[OCR] No text detected in image."
+                        )
+            except Exception as _ocr_exc:
+                fallback_hint = (
+                    (fallback_hint or "")
+                    + f"\n\n[OCR failed: {_ocr_exc}]"
+                )
 
     if _is_url(image_path):
         err = _validate_url_extension(

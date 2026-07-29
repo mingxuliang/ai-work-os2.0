@@ -8,7 +8,11 @@ export interface AgentSummary {
   description: string;
   workspace_dir: string;
   enabled: boolean;
+  pinned?: boolean;
+  startup_status?: string;
   active_model?: ModelSlotConfig | null;
+  /** Owner user id; null/undefined means shared/public agent */
+  user_id?: string | null;
 }
 
 export interface AgentListResponse {
@@ -35,6 +39,8 @@ export interface AgentProfileConfig {
   system_prompt_files?: string[];
   tools?: unknown;
   security?: unknown;
+  /** Owner user id; null/undefined means shared/public agent */
+  user_id?: string | null;
 }
 
 export interface CreateAgentRequest {
@@ -50,4 +56,7 @@ export interface CreateAgentRequest {
 export interface AgentProfileRef {
   id: string;
   workspace_dir: string;
+  enabled?: boolean;
+  pinned?: boolean;
+  user_id?: string | null;
 }

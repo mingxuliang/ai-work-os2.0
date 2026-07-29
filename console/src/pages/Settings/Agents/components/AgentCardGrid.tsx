@@ -1,6 +1,8 @@
 import type { CSSProperties, SyntheticEvent } from "react";
+import { useState } from "react";
 import { Button, Popconfirm, Space, Spin, Tag, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import {
   DndContext,
   PointerSensor,
@@ -15,14 +17,25 @@ import {
   useSortable,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { EditOutlined, DeleteOutlined } from "@ant-design/icons";
+import {
+  EditOutlined,
+  DeleteOutlined,
+  ThunderboltOutlined,
+  SendOutlined,
+} from "@ant-design/icons";
 import { EyeOff, Eye, GripVertical } from "lucide-react";
 import type { AgentSummary } from "@/api/types/agents";
 import { getAgentDisplayName } from "@/utils/agentDisplayName";
-import { loadAgentPresentation } from "@/utils/agentPresentationStorage";
+import {
+  loadAgentPresentation,
+  toggleSummoned,
+} from "@/utils/agentPresentationStorage";
 import { resolveTeamIcon } from "./agentTeamIcons";
+import { categoryLabelKey } from "./agentCategories";
 import { cbcCardStripeClass } from "@/utils/cbcCardTheme";
 import styles from "../index.module.less";
+
+export type AgentCardVariant = "team" | "myTeam";
 
 type SortableHandle = Pick<
   ReturnType<typeof useSortable>,
@@ -37,6 +50,16 @@ interface AgentCardGridProps {
   onDelete: (agentId: string) => void;
   onToggle: (agentId: string, currentEnabled: boolean) => void;
   onReorder: (activeId: string, overId: string) => void;
+  /** "team" = Agent 团队（默认）；"myTeam" = 我的AI团队 */
+  variant?: AgentCardVariant;
+  /**
+   * "team" 变体下：是否具备管理权限（新建/编辑/禁用/删除）。管理员为 true，
+   * 普通用户为 false（只能召唤使用）。"myTeam" 变体下此项被忽略——是否可管理
+   * 由每张卡片自己是否为「我的AI团队」创建的 agent 决定。
+   */
+  isAdmin?: boolean;
+  /** "myTeam" 变体下，取消召唤（非本人创建的 agent 使用）的回调 */
+  onRemoveFromTeam?: (agentId: string) => void;
 }
 
 interface SortableAgentCardProps {
@@ -47,6 +70,9 @@ interface SortableAgentCardProps {
   onEdit: (agent: AgentSummary) => void;
   onDelete: (agentId: string) => void;
   onToggle: (agentId: string, currentEnabled: boolean) => void;
+  onRemoveFromTeam?: (agentId: string) => void;
+  variant: AgentCardVariant;
+  isAdmin: boolean;
 }
 
 function CardDragGrip({
@@ -78,9 +104,13 @@ function SortableAgentCard({
   onEdit,
   onDelete,
   onToggle,
+  onRemoveFromTeam,
+  variant,
+  isAdmin,
 }: SortableAgentCardProps) {
   const { t } = useTranslation();
-  const dragDisabled = reordering || loading;
+  const navigate = useNavigate();
+  const dragDisabled = reordering || loading || (variant === "team" && !isAdmin);
   const {
     attributes,
     listeners,
@@ -103,7 +133,23 @@ function SortableAgentCard({
   const defaultAgent = agent.id === "default";
   const presentation = loadAgentPresentation(agent.id);
   const teamIconPresentation = resolveTeamIcon(presentation.iconKey);
-  const TeamHeroIcon = teamIconPresentation.Icon;
+  const [summoned, setSummoned] = useState<boolean>(presentation.summoned);
+  const isMyTeam = variant === "myTeam";
+  const isOwnMyTeamAgent = isMyTeam && presentation.origin === "myTeam";
+  // Full CRUD permission for this specific card: admins on the Agent Team
+  // page, or the owner of a self-created My AI Team agent.
+  const canManage = isMyTeam ? isOwnMyTeamAgent : isAdmin;
+
+  function handleSummon(e: SyntheticEvent) {
+    e.stopPropagation();
+    const next = toggleSummoned(agent.id);
+    setSummoned(next);
+  }
+
+  function handleAssignTask(e: SyntheticEvent) {
+    e.stopPropagation();
+    navigate(`/chat?agent=${encodeURIComponent(agent.id)}`);
+  }
 
   return (
     <div ref={setNodeRef} style={sortableStyle} className={`cbc-card ${themeCls}`}>
@@ -127,19 +173,46 @@ function SortableAgentCard({
         </div>
 
         <div className={styles.agentCardHero}>
-          <div className={`cbc-icon3d ${styles.agentCardIconCube}`}>
-            <TeamHeroIcon size={26} strokeWidth={2} color="#fff" />
+          <div className={styles.agentCardAvatar}>
+            <img
+              src={teamIconPresentation.src}
+              alt={teamIconPresentation.label}
+              className={styles.agentCardAvatarImg}
+            />
           </div>
           <div className={styles.agentCardTitles}>
-            <div className={`card-title ${styles.agentCardName}`}>{name}</div>
-            <span className="cbc-meta" style={{ fontSize: 12 }}>
-              ID: <code>{agent.id}</code>
-            </span>
+            <div className={`card-title ${styles.agentCardName}`} title={name}>
+              {name}
+            </div>
+            <div className={styles.agentCardIdLine} title={agent.id}>
+              {agent.id}
+            </div>
+            <div className={styles.agentCardStatusLine}>
+              <span
+                className={`${styles.statusDot} ${
+                  agent.enabled ? styles.statusDotOn : styles.statusDotOff
+                }`}
+                aria-hidden
+              />
+              <span className={styles.statusText}>
+                {agent.enabled ? t("common.enabled") : t("agent.disabled")}
+              </span>
+              {!defaultAgent ? (
+                <span className={styles.agentCategoryBadge}>
+                  {t(categoryLabelKey(presentation.category))}
+                </span>
+              ) : null}
+              {defaultAgent ? (
+                <span className={`cbc-tag ${styles.agentCardTagSpacer}`}>
+                  {t("agent.defaultDisplayName")}
+                </span>
+              ) : null}
+            </div>
           </div>
         </div>
 
         {presentation.tags.length > 0 ? (
-          <div style={{ marginTop: 10 }}>
+          <div className={styles.agentCardCustomTags}>
             <Space size={[4, 4]} wrap>
               {presentation.tags.map((tg) => (
                 <Tag key={tg}>{tg}</Tag>
@@ -148,101 +221,139 @@ function SortableAgentCard({
           </div>
         ) : null}
 
-        <div style={{ marginTop: 12 }} className="cbc-meta">
-          {!agent.enabled ? (
-            <Tag color="error" style={{ margin: 0 }}>
-              {t("agent.disabled")}
-            </Tag>
+        <div
+          className={styles.agentCardDesc}
+          title={agent.description?.trim() || undefined}
+        >
+          {agent.description?.trim() || ""}
+        </div>
+
+        <div className={styles.agentCardModelLine}>
+          {t("agent.modelColumn")}:{" "}
+          {agent.active_model ? (
+            <Tooltip title={agent.active_model.model}>
+              <span>{agent.active_model.model}</span>
+            </Tooltip>
           ) : (
-            <span className="cbc-tag">{t("common.enabled")}</span>
+            <span style={{ opacity: 0.5 }}>{t("agent.modelPlaceholder")}</span>
           )}
-          {defaultAgent ? (
-            <span className={`cbc-tag ${styles.agentCardTagSpacer}`}>
-              {t("agent.defaultDisplayName")}
-            </span>
-          ) : null}
         </div>
 
-        <div className={`cbc-meta ${styles.agentCardLines}`}>
-          <div
-            className={styles.agentCardLine}
-            style={{ minHeight: "2.8em" }}
-            title={agent.description || undefined}
-          >
-            {agent.description || "—"}
-          </div>
-          <div className={styles.agentCardLine}>
-            {t("agent.modelColumn")}:{" "}
-            {agent.active_model ? (
-              <Tooltip title={agent.active_model.model}>
-                <span>{agent.active_model.model}</span>
-              </Tooltip>
-            ) : (
-              <span style={{ opacity: 0.5 }}>{t("agent.modelPlaceholder")}</span>
-            )}
-          </div>
-        </div>
-
-        <div className="cbc-agent-card-actions">
-          <Space wrap size={[6, 6]}>
-            <Button
-              type="primary"
-              size="small"
-              icon={<EditOutlined />}
-              onClick={() => onEdit(agent)}
-              disabled={defaultAgent}
-              title={
-                defaultAgent ? t("agent.defaultNotEditable") : undefined
-              }
-            >
-              {t("agent.edit")}
-            </Button>
-            <Popconfirm
-              title={
-                agent.enabled
-                  ? t("agent.disableConfirm")
-                  : t("agent.enableConfirm")
-              }
-              description={
-                agent.enabled
-                  ? t("agent.disableConfirmDesc")
-                  : t("agent.enableConfirmDesc")
-              }
-              onConfirm={() => onToggle(agent.id, agent.enabled)}
-              disabled={defaultAgent}
-              okText={t("common.confirm")}
-              cancelText={t("common.cancel")}
-            >
+        <div
+          className={`cbc-agent-card-actions ${styles.agentCardActionsCompact}`}
+        >
+          <Space className={styles.agentCardActionSpace} size={4}>
+            {isMyTeam && (
               <Button
                 type="primary"
                 size="small"
-                icon={agent.enabled ? <EyeOff size={14} /> : <Eye size={14} />}
+                icon={<SendOutlined />}
+                onClick={handleAssignTask}
+                disabled={!agent.enabled}
+              >
+                {t("myTeam.assignTask")}
+              </Button>
+            )}
+
+            {!isMyTeam && !defaultAgent && (
+              <Tooltip
+                title={summoned ? t("agent.summonedTip") : t("agent.summonTip")}
+              >
+                <Button
+                  size="small"
+                  icon={<ThunderboltOutlined />}
+                  className={
+                    summoned ? styles.summonBtnActive : styles.summonBtn
+                  }
+                  onClick={handleSummon}
+                >
+                  {summoned ? t("agent.summoned") : t("agent.summon")}
+                </Button>
+              </Tooltip>
+            )}
+
+            {canManage && (
+              <Button
+                type="primary"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => onEdit(agent)}
                 disabled={defaultAgent}
                 title={
-                  defaultAgent ? t("agent.defaultNotDisablable") : undefined
+                  defaultAgent ? t("agent.defaultNotEditable") : undefined
                 }
               >
-                {agent.enabled ? t("common.disable") : t("common.enable")}
+                {t("agent.edit")}
               </Button>
-            </Popconfirm>
-            <Popconfirm
-              title={t("agent.deleteConfirm")}
-              description={t("agent.deleteConfirmDesc")}
-              onConfirm={() => onDelete(agent.id)}
-              disabled={defaultAgent}
-              okText={t("common.confirm")}
-              cancelText={t("common.cancel")}
-            >
-              <Button
-                danger
-                size="small"
-                icon={<DeleteOutlined />}
+            )}
+
+            {canManage && (
+              <Popconfirm
+                title={
+                  agent.enabled
+                    ? t("agent.disableConfirm")
+                    : t("agent.enableConfirm")
+                }
+                description={
+                  agent.enabled
+                    ? t("agent.disableConfirmDesc")
+                    : t("agent.enableConfirmDesc")
+                }
+                onConfirm={() => onToggle(agent.id, agent.enabled)}
                 disabled={defaultAgent}
-                title={defaultAgent ? t("agent.defaultNotDeletable") : undefined}
+                okText={t("common.confirm")}
+                cancelText={t("common.cancel")}
               >
-                {t("common.delete")}
-              </Button>
-            </Popconfirm>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={agent.enabled ? <EyeOff size={14} /> : <Eye size={14} />}
+                  disabled={defaultAgent}
+                  title={
+                    defaultAgent ? t("agent.defaultNotDisablable") : undefined
+                  }
+                >
+                  {agent.enabled ? t("common.disable") : t("common.enable")}
+                </Button>
+              </Popconfirm>
+            )}
+
+            {isMyTeam && !isOwnMyTeamAgent && (
+              <Popconfirm
+                title={t("myTeam.removeConfirm")}
+                description={t("myTeam.removeConfirmDesc")}
+                onConfirm={() => onRemoveFromTeam?.(agent.id)}
+                okText={t("common.confirm")}
+                cancelText={t("common.cancel")}
+              >
+                <Button danger size="small" icon={<DeleteOutlined />}>
+                  {t("common.delete")}
+                </Button>
+              </Popconfirm>
+            )}
+
+            {canManage && (
+              <Popconfirm
+                title={t("agent.deleteConfirm")}
+                description={t("agent.deleteConfirmDesc")}
+                onConfirm={() => onDelete(agent.id)}
+                disabled={defaultAgent}
+                okText={t("common.confirm")}
+                cancelText={t("common.cancel")}
+              >
+                <Button
+                  danger
+                  size="small"
+                  icon={<DeleteOutlined />}
+                  disabled={defaultAgent}
+                  title={
+                    defaultAgent ? t("agent.defaultNotDeletable") : undefined
+                  }
+                >
+                  {t("common.delete")}
+                </Button>
+              </Popconfirm>
+            )}
           </Space>
         </div>
       </div>
@@ -258,6 +369,9 @@ export function AgentCardGrid({
   onDelete,
   onToggle,
   onReorder,
+  onRemoveFromTeam,
+  variant = "team",
+  isAdmin = true,
 }: AgentCardGridProps) {
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -298,6 +412,9 @@ export function AgentCardGrid({
                 onEdit={onEdit}
                 onDelete={onDelete}
                 onToggle={onToggle}
+                onRemoveFromTeam={onRemoveFromTeam}
+                variant={variant}
+                isAdmin={isAdmin}
               />
             ))}
           </div>

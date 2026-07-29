@@ -60,31 +60,40 @@
   align-items: center;
   justify-content: center;
   aspect-ratio: 1;
-  min-height: 40px;
-  border: none;
-  border-radius: 10px;
+  min-height: 44px;
+  padding: 3px;
+  border: 2px solid transparent;
+  border-radius: 12px;
   cursor: pointer;
   background: rgb(243, 244, 246);
-  color: rgb(100, 116, 139);
+  overflow: hidden;
   transition:
     background 0.15s ease,
-    color 0.15s ease,
+    border-color 0.15s ease,
     box-shadow 0.15s ease;
 
   &:hover {
     background: rgb(229, 231, 235);
-    color: rgb(51, 65, 85);
   }
 }
 
+.teamIconImg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center top;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
 .teamIconBtnActive {
-  background: rgb(37, 99, 235) !important;
-  color: #fff !important;
+  background: #fff !important;
+  border-color: rgb(37, 99, 235);
   box-shadow: 0 2px 8px rgba(37, 99, 235, 0.35);
 
   &:hover {
-    background: rgb(29, 78, 216) !important;
-    color: #fff !important;
+    background: #fff !important;
   }
 }
 
@@ -247,22 +256,20 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 44px;
-  border-radius: 12px;
-  background: linear-gradient(145deg, #3b82f6 0%, #2563eb 48%, #1d4ed8 100%);
-  box-shadow:
-    0 4px 14px rgba(37, 99, 235, 0.35),
-    inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  width: 52px;
+  height: 52px;
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(15, 23, 42, 0.04);
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.06);
+}
 
-  svg,
-  img {
-    color: #fff;
-  }
-
-  img {
-    border-radius: 4px;
-  }
+.previewIconImg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 18%;
 }
 
 .previewName {
@@ -273,6 +280,19 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.previewCategoryBadge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.4;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: rgb(37, 99, 235);
+  margin: 0 0 6px !important;
 }
 
 .previewDesc {
@@ -419,11 +439,14 @@
 
   .teamIconBtn {
     background: rgba(255, 255, 255, 0.06);
-    color: rgba(226, 232, 240, 0.75);
 
     &:hover {
       background: rgba(255, 255, 255, 0.1);
-      color: rgba(248, 250, 252, 0.92);
     }
+  }
+
+  .teamIconBtnActive {
+    background: rgba(15, 23, 42, 0.65) !important;
+    border-color: rgb(96, 165, 250);
   }
 }

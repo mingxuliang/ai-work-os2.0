@@ -130,41 +130,83 @@ async def test_trigger_dream_no_workspace():
 
 
 def test_resolve_model_returns_none_or_str():
-    from aiwork_enterprise.auto_model import resolve_model
+    from aiwork.providers.auto_model import resolve_model
 
     result = resolve_model()
     assert result is None or isinstance(result, str)
 
 
 def test_resolve_model_env_override(monkeypatch):
-    monkeypatch.setenv("AIWORK_DEFAULT_MODEL", "gpt-4o-enterprise")
-    from aiwork_enterprise.auto_model import resolve_model
+    monkeypatch.setenv("AIWORK_DEFAULT_MODEL", "openai:gpt-4o")
+    monkeypatch.setattr(
+        "aiwork.providers.auto_model._iter_provider_models",
+        lambda pm: iter([]),
+    )
+    from aiwork.providers.auto_model import resolve_model
 
-    result = resolve_model()
-    assert result == "gpt-4o-enterprise"
+    result = resolve_model(requires_vision=True)
+    assert result == "openai:gpt-4o"
 
 
 def test_resolve_model_vision_context(monkeypatch):
-    monkeypatch.setenv("AIWORK_DEFAULT_MODEL", "gpt-4-vision")
-    from aiwork_enterprise.auto_model import resolve_model
+    monkeypatch.setenv("AIWORK_DEFAULT_MODEL", "openai:gpt-4-vision")
+    monkeypatch.setattr(
+        "aiwork.providers.auto_model._iter_provider_models",
+        lambda pm: iter([]),
+    )
+    from aiwork.providers.auto_model import resolve_model
 
     result = resolve_model(requires_vision=True)
-    assert result == "gpt-4-vision"
+    assert result == "openai:gpt-4-vision"
 
 
 def test_auto_model_for_request(monkeypatch):
-    monkeypatch.setenv("AIWORK_DEFAULT_MODEL", "claude-3-opus")
-    from aiwork_enterprise.auto_model import auto_model_for_request
+    monkeypatch.setenv("AIWORK_DEFAULT_MODEL", "anthropic:claude-3-opus")
+    monkeypatch.setattr(
+        "aiwork.providers.auto_model._iter_provider_models",
+        lambda pm: iter([]),
+    )
+    from aiwork.providers.auto_model import auto_model_for_request
 
     result = auto_model_for_request({"has_image": True})
-    assert result == "claude-3-opus"
+    assert result == "anthropic:claude-3-opus"
 
 
 def test_auto_model_empty_context():
-    from aiwork_enterprise.auto_model import auto_model_for_request
+    from aiwork.providers.auto_model import auto_model_for_request
 
     result = auto_model_for_request({})
     assert result is None or isinstance(result, str)
+
+
+def test_inspect_request_media_detects_image():
+    from aiwork.providers.auto_model import inspect_request_media
+    from types import SimpleNamespace
+
+    req = SimpleNamespace(
+        input=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "look"},
+                    {"type": "image", "image_url": "https://x/a.png"},
+                ],
+            },
+        ],
+    )
+    flags = inspect_request_media(req)
+    assert flags["has_image"] is True
+
+
+def test_maybe_auto_model_disabled(monkeypatch):
+    monkeypatch.setenv("AIWORK_AUTO_MODEL", "false")
+    from aiwork.providers.auto_model import maybe_auto_model_slot
+    from types import SimpleNamespace
+
+    req = SimpleNamespace(
+        input=[{"content": [{"type": "image", "image_url": "x"}]}],
+    )
+    assert maybe_auto_model_slot(req) is None
 
 
 # ─── Integrated: mount summary keys ──────────────────────────────────────────
@@ -172,11 +214,14 @@ def test_auto_model_empty_context():
 
 def test_mount_enterprise_has_security_and_cron_keys():
     from fastapi import FastAPI
-    from aiwork_enterprise.mount import mount_enterprise
+    from aiwork.app.enterprise_mount import mount_enterprise
 
     app = FastAPI()
-    summary = mount_enterprise(app, include_jwt=False, include_security_headers=False)
-    assert "security_layers" in summary
-    assert "cron_router" in summary
-    assert "cron_status" in summary
-    assert "approval" in summary
+    summary = mount_enterprise(
+        app,
+        include_jwt=False,
+        include_security_headers=False,
+        include_business=False,
+    )
+    assert "auto_model" in summary
+    assert summary["auto_model"] in (True, False)

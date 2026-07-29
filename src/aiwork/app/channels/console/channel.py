@@ -496,8 +496,14 @@ class ConsoleChannel(BaseChannel):
             alternatives = self._get_free_model_alternatives()
             rl_event = _json.dumps(
                 {
-                    "type": "rate_limited",
-                    "error": str(e).strip(),
+                    "object": "message",
+                    "type": "error",
+                    "id": "rate_limited",
+                    "role": "assistant",
+                    "status": "failed",
+                    "content": [],
+                    "code": "rate_limited",
+                    "message": str(e).strip(),
                     "alternatives": alternatives,
                 },
             )

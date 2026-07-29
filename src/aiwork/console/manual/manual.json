@@ -1,0 +1,13 @@
+{
+  "title": "AI Work OS 系统操作手册",
+  "sourceFile": "",
+  "updatedAt": "2026-06-11T03:29:53.354840+00:00",
+  "sections": [
+    {
+      "id": "placeholder",
+      "title": "手册待导入",
+      "level": 1,
+      "content": "请将桌面上的 **AI-Work-OS-系统操作手册.docx** 复制到项目目录后运行转换脚本：\n\n```bash\nmkdir -p docs/manual\ncp ~/Desktop/AI-Work-OS-系统操作手册.docx docs/manual/\npython scripts/convert_manual_docx.py\ncd console && npm run build\n```\n\n转换完成后刷新本页即可看到完整手册内容。"
+    }
+  ]
+}

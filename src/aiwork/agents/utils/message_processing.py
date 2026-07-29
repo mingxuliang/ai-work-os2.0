@@ -21,6 +21,109 @@ from .file_handling import download_file_from_base64, download_file_from_url
 logger = logging.getLogger(__name__)
 
 
+def _guess_upload_media_type(path: str, filename: str | None = None) -> str:
+    """Guess MIME type from path/filename for upload hints."""
+    import mimetypes
+
+    name = filename or path
+    guessed, _ = mimetypes.guess_type(name)
+    return guessed or "application/octet-stream"
+
+
+def _tool_hint_for_upload(path: str, media_type: str, lang: str) -> str:
+    """Suggest the right tool/skill for an uploaded file."""
+    ext = Path(path).suffix.lower()
+    major = (media_type or "").split("/", 1)[0]
+    if lang == "zh":
+        if ext == ".pdf" or media_type == "application/pdf":
+            return "建议使用 pdf 技能提取文本/表格；不要用 read_file 当纯文本读取 PDF。"
+        if ext in {".docx", ".doc"}:
+            return "建议使用 docx 技能读取文档内容。"
+        if ext in {".xlsx", ".xls", ".csv"}:
+            return "建议使用 xlsx 技能或按表格方式处理。"
+        if ext in {".pptx", ".ppt"}:
+            return "建议使用 pptx 技能处理演示文稿。"
+        if major == "image" or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+            return "这是图片文件，可直接理解或使用 view_media / ocr_image。"
+        if ext in {".txt", ".md", ".json", ".xml", ".html", ".log"}:
+            return "这是文本文件，可使用 read_file 读取。"
+        return "请按文件类型选择对应技能处理；二进制文件不要直接 read_file。"
+    if ext == ".pdf" or media_type == "application/pdf":
+        return "Use the pdf skill to extract text/tables; do not read_file a PDF as plain text."
+    if ext in {".docx", ".doc"}:
+        return "Use the docx skill to read the document."
+    if ext in {".xlsx", ".xls", ".csv"}:
+        return "Use the xlsx skill or treat it as a spreadsheet."
+    if ext in {".pptx", ".ppt"}:
+        return "Use the pptx skill for the presentation."
+    if major == "image" or ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}:
+        return "This is an image; understand it directly or use view_media / ocr_image."
+    if ext in {".txt", ".md", ".json", ".xml", ".html", ".log"}:
+        return "This is a text file; use read_file."
+    return "Choose the matching skill for this file type; do not read_file binary formats."
+
+
+def _normalize_local_upload_path(url_or_path: str) -> str | None:
+    """Turn file:// or raw path into a real on-disk path (unquote + exists).
+
+    URLSource/AnyUrl percent-encodes non-ASCII names; stripping file:// without
+    unquote yields a path that does not exist on disk.
+    """
+    raw = (url_or_path or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("file://"):
+        raw = raw[len("file://"):]
+    # Windows file:///C:/...
+    if len(raw) >= 3 and raw[0] == "/" and raw[2] == ":" and raw[1].isalpha():
+        raw = raw[1:]
+    decoded = urllib.parse.unquote(raw)
+    candidates = [decoded]
+    if decoded != raw:
+        candidates.append(raw)
+    for cand in candidates:
+        try:
+            path = Path(cand).expanduser()
+            if path.exists():
+                return str(path.resolve())
+        except OSError:
+            continue
+    # Last resort: return decoded absolute-looking path for clearer errors
+    try:
+        return str(Path(decoded).expanduser())
+    except OSError:
+        return decoded
+
+
+def _build_upload_notice(
+    local_path: str,
+    *,
+    filename: str | None = None,
+    media_type: str | None = None,
+    lang: str = "en",
+) -> str:
+    """Structured upload notice so the agent can open and route the file."""
+    name = filename or Path(local_path).name
+    mime = media_type or _guess_upload_media_type(local_path, name)
+    hint = _tool_hint_for_upload(local_path, mime, lang)
+    if lang == "zh":
+        return (
+            "用户上传文件：\n"
+            f"- 本地路径: {local_path}\n"
+            f"- 文件名: {name}\n"
+            f"- 类型: {mime}\n"
+            f"- {hint}"
+        )
+    return (
+        "User uploaded a file:\n"
+        f"- local_path: {local_path}\n"
+        f"- file_name: {name}\n"
+        f"- media_type: {mime}\n"
+        f"- {hint}"
+    )
+
+
+
 async def _process_single_file_block(
     source: dict,
     filename: Optional[str],
@@ -466,9 +569,17 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
             if not isinstance(block, dict):
                 source = getattr(block, "source", None)
                 url = str(getattr(source, "url", "")) if source else ""
-                if url.startswith("file://"):
-                    local_path = url.removeprefix("file://")
-                    downloaded_files.append((i, local_path))
+                if url.startswith("file://") or url.startswith("/"):
+                    local_path = _normalize_local_upload_path(url)
+                    if local_path:
+                        filename = getattr(block, "name", None)
+                        media_type = None
+                        source_obj = getattr(block, "source", None)
+                        if source_obj is not None:
+                            media_type = getattr(source_obj, "media_type", None)
+                        downloaded_files.append(
+                            (i, local_path, filename, media_type),
+                        )
                 # Remote URL or no URL on a Pydantic block: skip silently.
                 # Adding remote-download for Pydantic DataBlock is a
                 # separate feature (would need to also convert the dict
@@ -491,15 +602,31 @@ async def process_file_and_media_blocks_in_message(msg) -> None:
                 block_dict,
             )
             if local_path:
-                downloaded_files.append((i, local_path))
+                local_path = _normalize_local_upload_path(local_path) or local_path
+                downloaded_files.append(
+                    (
+                        i,
+                        local_path,
+                        block_dict.get("filename") or block_dict.get("name"),
+                        block_dict.get("media_type"),
+                    ),
+                )
 
         if downloaded_files:
             lang = load_config().agents.language
-            for i, local_path in reversed(downloaded_files):
-                text = (
-                    f"用户上传文件，已经下载到 {local_path}"
-                    if lang == "zh"
-                    else f"User uploaded a file, downloaded to {local_path}"
+            for item in reversed(downloaded_files):
+                # Support legacy (i, path) and enriched (i, path, name, mime)
+                if len(item) == 2:
+                    i, local_path = item
+                    filename = None
+                    media_type = None
+                else:
+                    i, local_path, filename, media_type = item
+                text = _build_upload_notice(
+                    local_path,
+                    filename=filename,
+                    media_type=media_type,
+                    lang=lang,
                 )
                 message.content.insert(
                     i + 1,

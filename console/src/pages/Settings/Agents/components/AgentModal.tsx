@@ -21,6 +21,11 @@ import { skillApi } from "@/api/modules/skill";
 import { providerApi } from "@/api/modules/provider";
 import { providerIcon } from "../../Models/components/providerIcon";
 import { DEFAULT_TEAM_ICON_KEY, TEAM_ICON_OPTIONS, resolveTeamIcon } from "./agentTeamIcons";
+import {
+  CATEGORY_OPTIONS,
+  DEFAULT_CATEGORY_KEY,
+  categoryLabelKey,
+} from "./agentCategories";
 import parentStyles from "../index.module.less";
 import modalStyles from "./AgentModal.module.less";
 
@@ -40,7 +45,7 @@ function TeamIconPicker({
   const current = value ?? DEFAULT_TEAM_ICON_KEY;
   return (
     <div className={modalStyles.teamIconGrid}>
-      {TEAM_ICON_OPTIONS.map(({ key: k, Icon }) => (
+      {TEAM_ICON_OPTIONS.map(({ key: k, src, label }) => (
         <button
           type="button"
           key={k}
@@ -49,8 +54,9 @@ function TeamIconPicker({
           }`}
           onClick={() => onChange?.(k)}
           aria-pressed={k === current}
+          title={label}
         >
-          <Icon size={18} strokeWidth={1.8} />
+          <img src={src} alt={label} className={modalStyles.teamIconImg} />
         </button>
       ))}
     </div>
@@ -149,14 +155,19 @@ export function AgentModal({
   const watchedId = Form.useWatch("id", form);
   const teamIconKeyWatch = Form.useWatch("team_icon", form);
   const teamTagsWatch = Form.useWatch("team_tags", form);
+  const teamCategoryWatch = Form.useWatch("team_category", form);
 
   const previewTeamIconEntry = resolveTeamIcon(
     typeof teamIconKeyWatch === "string"
       ? teamIconKeyWatch
       : DEFAULT_TEAM_ICON_KEY,
   );
-  const PreviewTeamIconSvg = previewTeamIconEntry.Icon;
   const previewTagsArr = Array.isArray(teamTagsWatch) ? teamTagsWatch : [];
+  const previewCategoryKey =
+    typeof teamCategoryWatch === "string"
+      ? teamCategoryWatch
+      : DEFAULT_CATEGORY_KEY;
+  const previewCategoryLabel = t(categoryLabelKey(previewCategoryKey));
 
   const eligibleProviders: EligibleProvider[] = useMemo(() => {
     return providers
@@ -394,6 +405,19 @@ export function AgentModal({
               >
                 <TeamIconPicker />
               </Form.Item>
+              <Form.Item
+                name="team_category"
+                initialValue={DEFAULT_CATEGORY_KEY}
+                label={t("agent.category")}
+                extra={t("agent.categoryHelp")}
+              >
+                <Select
+                  options={CATEGORY_OPTIONS.map((opt) => ({
+                    value: opt.key,
+                    label: t(opt.labelKey),
+                  }))}
+                />
+              </Form.Item>
             </div>
 
             <div className={modalStyles.agentModalSection}>
@@ -617,11 +641,18 @@ export function AgentModal({
             <div className={modalStyles.previewCard}>
               <span className={modalStyles.previewStatusDot} aria-hidden />
               <div className={modalStyles.previewIconCube}>
-                <PreviewTeamIconSvg size={22} strokeWidth={2} color="#fff" />
+                <img
+                  src={previewTeamIconEntry.src}
+                  alt={previewTeamIconEntry.label}
+                  className={modalStyles.previewIconImg}
+                />
               </div>
               <div className={modalStyles.previewName}>
                 {previewName || t("agent.previewPlaceholderName")}
               </div>
+              <span className={modalStyles.previewCategoryBadge}>
+                {previewCategoryLabel}
+              </span>
               <p className={modalStyles.previewDesc}>
                 {previewDesc || t("agent.previewPlaceholderDesc")}
               </p>

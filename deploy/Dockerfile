@@ -83,8 +83,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libu2f-udev \
   && rm -rf /var/lib/apt/lists/*
 
-# 编译安装 Python 3.10.14（使用华为云镜像加速下载）
-ARG PYTHON_VERSION=3.10.14
+# 编译安装 Python 3.12.8（使用华为云镜像加速下载）
+ARG PYTHON_VERSION=3.12.8
 RUN curl -fsSL https://repo.huaweicloud.com/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz -o /tmp/python.tgz \
   && tar xzf /tmp/python.tgz -C /tmp \
   && cd /tmp/Python-${PYTHON_VERSION} \
@@ -92,8 +92,8 @@ RUN curl -fsSL https://repo.huaweicloud.com/python/${PYTHON_VERSION}/Python-${PY
   && make -j$(nproc) \
   && make altinstall \
   && cd / && rm -rf /tmp/python.tgz /tmp/Python-${PYTHON_VERSION} \
-  && ln -sf /usr/local/bin/python3.10 /usr/local/bin/python3 \
-  && ln -sf /usr/local/bin/pip3.10 /usr/local/bin/pip3 \
+  && ln -sf /usr/local/bin/python3.12 /usr/local/bin/python3 \
+  && ln -sf /usr/local/bin/pip3.12 /usr/local/bin/pip3 \
   && ldconfig
 
 
@@ -108,7 +108,7 @@ ENV AIWORK_RUNNING_IN_CONTAINER=1
 
 WORKDIR ${WORKSPACE_DIR}
 
-RUN python3.10 -m venv venv
+RUN python3.12 -m venv venv
 ENV PATH="/app/venv/bin:$PATH"
 
 # Speed up Python package installation with uv.

@@ -221,6 +221,20 @@ class AgentBuilder:
         # Model + formatter (built before the toolkit so the scroll context
         # strategy, which needs the model for token counting, can wire in).
         model_slot_override = getattr(ctx.request, "model_slot_override", None)
+        if model_slot_override is None:
+            try:
+                from ..providers.auto_model import maybe_auto_model_slot
+
+                model_slot_override = maybe_auto_model_slot(
+                    getattr(ctx, "request", None),
+                    agent_config,
+                )
+            except Exception:  # noqa: BLE001
+                _logger.debug(
+                    "auto_model selection skipped",
+                    exc_info=True,
+                )
+                model_slot_override = None
         model, _formatter = self.build_model(
             agent_config,
             model_slot_override=model_slot_override,

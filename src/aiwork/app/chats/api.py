@@ -22,6 +22,13 @@ from .utils import agentscope_msg_to_message, parse_legacy_memory_state
 
 logger = logging.getLogger(__name__)
 
+from .user_scope import (
+    assert_chat_owner,
+    get_request_user_id,
+    is_admin_request,
+    set_scoped_chat_user_id,
+)
+
 
 router = APIRouter(prefix="/chats", tags=["chats"])
 
@@ -38,15 +45,10 @@ async def get_chat_manager(
 ) -> ChatManager:
     """Get the chat manager for the active agent.
 
-    Args:
-        request: FastAPI request object
-
-    Returns:
-        ChatManager instance for the specified agent
-
-    Raises:
-        HTTPException: If manager is not initialized
+    Also binds the request JWT user into the per-user chat bucket scope.
     """
+    user_id = get_request_user_id(request)
+    set_scoped_chat_user_id(user_id)
     workspace = await get_workspace(request)
     return workspace.chat_manager
 
@@ -71,7 +73,11 @@ async def get_session(
 
 @router.get("", response_model=list[ChatSpec])
 async def list_chats(
-    user_id: Optional[str] = Query(None, description="Filter by user ID"),
+    request: Request,
+    user_id: Optional[str] = Query(
+        None,
+        description="Ignored; always scoped to JWT user",
+    ),
     channel: Optional[str] = Query(None, description="Filter by channel"),
     archived: Optional[bool] = Query(
         None,
@@ -84,14 +90,11 @@ async def list_chats(
     mgr: ChatManager = Depends(get_chat_manager),
     workspace=Depends(get_workspace),
 ):
-    """List all chats with optional filters.
-
-    When ``archived`` is omitted, returns all chats (both active and archived).
-    Pass ``archived=false`` for active only,
-    ``archived=true`` for archived only.
-    """
+    """List chats for the authenticated user only (hard isolation)."""
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
     chats = await mgr.list_chats(
-        user_id=user_id,
+        user_id=current_uid,
         channel=channel,
         archived=archived,
     )
@@ -105,6 +108,7 @@ async def list_chats(
 
 @router.post("", response_model=ChatSpec)
 async def create_chat(
+    http_request: Request,
     request: ChatSpec,
     mgr: ChatManager = Depends(get_chat_manager),
 ):
@@ -119,12 +123,14 @@ async def create_chat(
     Returns:
         Created chat spec with UUID
     """
+    current_uid = get_request_user_id(http_request)
+    set_scoped_chat_user_id(current_uid)
     chat_id = str(uuid4())
     spec = ChatSpec(
         id=chat_id,
         name=request.name,
         session_id=request.session_id,
-        user_id=request.user_id,
+        user_id=current_uid,
         channel=request.channel,
         meta=request.meta,
     )
@@ -133,6 +139,7 @@ async def create_chat(
 
 @router.post("/batch-delete", response_model=dict)
 async def batch_delete_chats(
+    request: Request,
     chat_ids: list[str],
     mgr: ChatManager = Depends(get_chat_manager),
 ):
@@ -145,6 +152,17 @@ async def batch_delete_chats(
         True if deleted, False if failed
 
     """
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    is_admin = is_admin_request(request)
+    allowed: list[str] = []
+    for cid in chat_ids:
+        spec = await mgr.get_chat(cid)
+        if not spec:
+            continue
+        if str(spec.user_id) == current_uid or is_admin:
+            allowed.append(cid)
+    chat_ids = allowed
     deleted = await mgr.delete_chats(chat_ids=chat_ids)
     return {"deleted": deleted}
 
@@ -164,11 +182,23 @@ class BatchChatIds(BaseModel):
 
 @router.post("/actions/batch-archive", response_model=BatchArchiveResult)
 async def batch_archive_chats(
+    request: Request,
     payload: BatchChatIds,
     mgr: ChatManager = Depends(get_chat_manager),
     workspace=Depends(get_workspace),
 ):
     """Batch archive chats. Running chats are skipped."""
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    is_admin = is_admin_request(request)
+    allowed_ids: list[str] = []
+    for cid in payload.chat_ids:
+        spec = await mgr.get_chat(cid)
+        if not spec:
+            continue
+        if str(spec.user_id) == current_uid or is_admin:
+            allowed_ids.append(cid)
+    payload = BatchChatIds(chat_ids=allowed_ids)
     tracker = workspace.task_tracker
     return await mgr.batch_archive(
         chat_ids=payload.chat_ids,
@@ -178,16 +208,29 @@ async def batch_archive_chats(
 
 @router.post("/actions/batch-unarchive", response_model=BatchArchiveResult)
 async def batch_unarchive_chats(
+    request: Request,
     payload: BatchChatIds,
     mgr: ChatManager = Depends(get_chat_manager),
 ):
     """Batch unarchive chats."""
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    is_admin = is_admin_request(request)
+    allowed_ids: list[str] = []
+    for cid in payload.chat_ids:
+        spec = await mgr.get_chat(cid)
+        if not spec:
+            continue
+        if str(spec.user_id) == current_uid or is_admin:
+            allowed_ids.append(cid)
+    payload = BatchChatIds(chat_ids=allowed_ids)
     return await mgr.batch_unarchive(chat_ids=payload.chat_ids)
 
 
 @router.post("/{chat_id}/archive", response_model=ChatSpec)
 async def archive_chat(
     chat_id: str,
+    request: Request,
     mgr: ChatManager = Depends(get_chat_manager),
     workspace=Depends(get_workspace),
 ):
@@ -195,6 +238,12 @@ async def archive_chat(
 
     Returns 409 if the chat is currently running.
     """
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    existing = await mgr.get_chat(chat_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Chat not found: {chat_id}")
+    assert_chat_owner(existing, user_id=current_uid, allow_admin=True, is_admin=is_admin_request(request))
     status = await workspace.task_tracker.get_status(chat_id)
     try:
         result = await mgr.archive_chat(chat_id, check_status=status)
@@ -214,9 +263,16 @@ async def archive_chat(
 @router.post("/{chat_id}/unarchive", response_model=ChatSpec)
 async def unarchive_chat(
     chat_id: str,
+    request: Request,
     mgr: ChatManager = Depends(get_chat_manager),
 ):
     """Unarchive a single chat. Idempotent."""
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    existing = await mgr.get_chat(chat_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Chat not found: {chat_id}")
+    assert_chat_owner(existing, user_id=current_uid, allow_admin=True, is_admin=is_admin_request(request))
     result = await mgr.unarchive_chat(chat_id)
     if result is None:
         raise HTTPException(
@@ -232,6 +288,7 @@ async def unarchive_chat(
 @router.get("/{chat_id}", response_model=ChatHistory)
 async def get_chat(
     chat_id: str,
+    request: Request,
     mgr: ChatManager = Depends(get_chat_manager),
     session: SafeJSONSession = Depends(get_session),
     workspace=Depends(get_workspace),
@@ -250,19 +307,42 @@ async def get_chat(
     Raises:
         HTTPException: If chat not found (404)
     """
-    chat_spec = await mgr.get_chat(chat_id)
+    # The Console keeps a temporary numeric session_id as its UI id while
+    # the repository stores a UUID. Accept either form so history refreshes
+    # cannot fail with 404 after a streamed reply completes.
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    is_admin = is_admin_request(request)
+
+    resolved_chat_id = chat_id
+    chat_spec = await mgr.get_chat(resolved_chat_id)
+    if not chat_spec:
+        mapped_chat_id = await mgr.get_chat_id_by_session(
+            session_id=chat_id,
+            channel="console",
+            user_id=current_uid,
+        )
+        if mapped_chat_id:
+            resolved_chat_id = mapped_chat_id
+            chat_spec = await mgr.get_chat(resolved_chat_id)
     if not chat_spec:
         raise HTTPException(
             status_code=404,
             detail=f"Chat not found: {chat_id}",
         )
+    assert_chat_owner(
+        chat_spec,
+        user_id=current_uid,
+        allow_admin=True,
+        is_admin=is_admin,
+    )
 
     state = await session.get_session_state_dict(
         chat_spec.session_id,
         chat_spec.user_id,
         chat_spec.channel,
     )
-    status = await workspace.task_tracker.get_status(chat_id)
+    status = await workspace.task_tracker.get_status(resolved_chat_id)
     if not state:
         return ChatHistory(messages=[], status=status)
 
@@ -293,6 +373,7 @@ async def get_chat(
 @router.put("/{chat_id}", response_model=ChatSpec)
 async def update_chat(
     chat_id: str,
+    request: Request,
     spec: ChatUpdate,
     mgr: ChatManager = Depends(get_chat_manager),
 ):
@@ -309,6 +390,12 @@ async def update_chat(
     Raises:
         HTTPException: If chat not found (404)
     """
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    existing = await mgr.get_chat(chat_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Chat not found: {chat_id}")
+    assert_chat_owner(existing, user_id=current_uid, allow_admin=True, is_admin=is_admin_request(request))
     updated = await mgr.patch_chat(chat_id, spec)
     if updated is None:
         raise HTTPException(
@@ -321,6 +408,7 @@ async def update_chat(
 @router.delete("/{chat_id}", response_model=dict)
 async def delete_chat(
     chat_id: str,
+    request: Request,
     mgr: ChatManager = Depends(get_chat_manager),
 ):
     """Delete a chat by UUID.
@@ -338,6 +426,12 @@ async def delete_chat(
     Raises:
         HTTPException: If chat not found (404)
     """
+    current_uid = get_request_user_id(request)
+    set_scoped_chat_user_id(current_uid)
+    existing = await mgr.get_chat(chat_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail=f"Chat not found: {chat_id}")
+    assert_chat_owner(existing, user_id=current_uid, allow_admin=True, is_admin=is_admin_request(request))
     deleted = await mgr.delete_chats(chat_ids=[chat_id])
     if not deleted:
         raise HTTPException(

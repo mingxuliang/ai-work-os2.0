@@ -91,17 +91,27 @@ async def create_chat_service(ws: "Workspace", service):
     """
     # pylint: disable=protected-access
     from ..chats.manager import ChatManager
-    from ..chats.repo.json_repo import JsonChatRepository
+    from ..chats.repo.user_bucket_repo import UserBucketChatRepository
+    from ..enterprise_env import get_bool, get_env
 
     if service is not None:
         cm = service
         logger.info(f"Reusing ChatManager for {ws.agent_id}")
     else:
-        chats_path = str(ws.workspace_dir / "chats.json")
-        chat_repo = JsonChatRepository(chats_path)
+        chat_repo = UserBucketChatRepository(
+            agent_id=getattr(ws, "agent_id", "default"),
+            workspace_dir=ws.workspace_dir,
+            legacy_path=ws.workspace_dir / "chats.json",
+            enable_mysql=get_bool("AIWORK_CHAT_MYSQL", False),
+            db_url=get_env("AIWORK_JWT_DB_URL", ""),
+        )
         cm = ChatManager(repo=chat_repo)
         ws._service_manager.services["chat_manager"] = cm
-        logger.info(f"ChatManager created: {chats_path}")
+        logger.info(
+            "ChatManager created with user-bucket repo (agent=%s mysql=%s)",
+            getattr(ws, "agent_id", "?"),
+            get_bool("AIWORK_CHAT_MYSQL", False),
+        )
     # pylint: enable=protected-access
 
 
