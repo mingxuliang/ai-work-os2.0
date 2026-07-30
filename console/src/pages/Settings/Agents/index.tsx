@@ -13,7 +13,7 @@ import type {
 } from "../../../api/types/agents";
 import { useAgentStore } from "../../../stores/agentStore";
 import { useAgents } from "./useAgents";
-import { AgentCardGrid, AgentModal } from "./components";
+import { AgentCardGrid, AgentModal, AgentDetailModal } from "./components";
 import { PageHeader } from "@/components/PageHeader";
 import { CopawWorkbenchShell } from "@/components/CopawWorkbenchShell";
 import { reorderAgents } from "./reorder";
@@ -22,6 +22,10 @@ import {
   removeAgentPresentation,
   saveAgentPresentation,
 } from "@/utils/agentPresentationStorage";
+import {
+  appendAgentEditHistory,
+  removeAgentEditHistory,
+} from "@/utils/agentEditHistoryStorage";
 import { DEFAULT_TEAM_ICON_KEY } from "./components/agentTeamIcons";
 import {
   ALL_CATEGORY_KEY,
@@ -45,6 +49,8 @@ export default function AgentsPage() {
   const { selectedAgent, setSelectedAgent } = useAgentStore();
   const [modalVisible, setModalVisible] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentSummary | null>(null);
+  const [detailAgent, setDetailAgent] = useState<AgentSummary | null>(null);
+  const [summonTick, setSummonTick] = useState(0);
   const [reordering, setReordering] = useState(false);
   const [form] = Form.useForm();
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
@@ -108,6 +114,7 @@ export default function AgentsPage() {
     try {
       await deleteAgent(agentId);
       removeAgentPresentation(agentId);
+      removeAgentEditHistory(agentId);
 
       if (selectedAgent === agentId) {
         setSelectedAgent("default");
@@ -201,6 +208,19 @@ export default function AgentsPage() {
               : DEFAULT_CATEGORY_KEY,
           origin: "team",
         });
+        appendAgentEditHistory(editingAgent.id, {
+          kind: "profile_updated",
+          title: t("agentDetail.historyUpdated"),
+          description:
+            typeof payload.name === "string" ? payload.name : editingAgent.id,
+        });
+        if (newSkills.length > 0) {
+          appendAgentEditHistory(editingAgent.id, {
+            kind: "skills_added",
+            title: t("agentDetail.historySkillsAdded"),
+            description: newSkills.join(", "),
+          });
+        }
         installedSkillsRef.current = [
           ...previousInstalledSkills,
           ...newSkills.filter(
@@ -226,6 +246,19 @@ export default function AgentsPage() {
               : DEFAULT_CATEGORY_KEY,
           origin: "team",
         });
+        appendAgentEditHistory(result.id, {
+          kind: "created",
+          title: t("agentDetail.historyCreated"),
+          description:
+            typeof payload.name === "string" ? payload.name : result.id,
+        });
+        if (selectedSkills.length > 0) {
+          appendAgentEditHistory(result.id, {
+            kind: "skills_added",
+            title: t("agentDetail.historySkillsAdded"),
+            description: selectedSkills.join(", "),
+          });
+        }
         message.success(`${t("agent.createSuccess")} (ID: ${result.id})`);
       }
 
@@ -340,6 +373,7 @@ export default function AgentsPage() {
             />
           ) : null}
           <AgentCardGrid
+            key={summonTick}
             agents={filteredAgents}
             loading={loading}
             reordering={reordering}
@@ -347,10 +381,22 @@ export default function AgentsPage() {
             onDelete={handleDelete}
             onToggle={handleToggle}
             onReorder={handleReorder}
+            onCardClick={setDetailAgent}
             variant="team"
             isAdmin={isAdmin}
           />
         </div>
+
+        <AgentDetailModal
+          open={!!detailAgent}
+          agent={detailAgent}
+          variant="team"
+          isAdmin={isAdmin}
+          onClose={() => setDetailAgent(null)}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
+          onSummonChange={() => setSummonTick((n) => n + 1)}
+        />
 
         <AgentModal
           open={modalVisible}

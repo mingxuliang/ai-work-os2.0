@@ -7,10 +7,14 @@ import { agentsApi } from "../../api/modules/agents";
 import { useTranslation } from "react-i18next";
 import { getAgentDisplayName } from "../../utils/agentDisplayName";
 import { useNavigate } from "react-router-dom";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppMessage } from "../../hooks/useAppMessage";
+import { getSummonedAgentIds } from "../../utils/agentPresentationStorage";
+import type { AgentSummary } from "../../api/types/agents";
 import modelUi from "../../pages/Chat/ModelSelector/index.module.less";
 import styles from "./index.module.less";
+
+const EMPTY_AGENTS: AgentSummary[] = [];
 
 function briefAgentDescription(text: string, maxChars = 64): string {
   const collapsed = text.replace(/\s+/g, " ").trim();
@@ -54,6 +58,14 @@ export default function AgentSelector({
     void loadAgents();
   }, [loadAgents]);
 
+  /** Chat toolbar: only agents in「我的AI团队」(summoned). Sidebar: all agents. */
+  const selectableAgents = useMemo(() => {
+    if (!agents?.length) return EMPTY_AGENTS;
+    if (variant !== "chatToolbar") return agents;
+    const summonedIds = getSummonedAgentIds();
+    return agents.filter((a) => summonedIds.has(a.id));
+  }, [agents, variant]);
+
   const selectAgentById = useCallback(
     (agentId: string) => {
       const targetAgent = agents?.find((a) => a.id === agentId);
@@ -71,7 +83,26 @@ export default function AgentSelector({
   );
 
   useEffect(() => {
-    if (!agents?.length || selectedAgent === "default") return;
+    if (!agents?.length) return;
+
+    if (variant === "chatToolbar") {
+      if (!selectableAgents.length) return;
+      const currentAgent = selectableAgents.find((a) => a.id === selectedAgent);
+      if (!currentAgent) {
+        const fallback =
+          selectableAgents.find((a) => a.enabled) ?? selectableAgents[0];
+        if (fallback) setSelectedAgent(fallback.id);
+      } else if (!currentAgent.enabled) {
+        const fallback = selectableAgents.find((a) => a.enabled);
+        if (fallback) {
+          setSelectedAgent(fallback.id);
+          message.warning(t("agent.currentAgentDisabled"));
+        }
+      }
+      return;
+    }
+
+    if (selectedAgent === "default") return;
 
     const currentAgent = agents.find((a) => a.id === selectedAgent);
 
@@ -82,7 +113,15 @@ export default function AgentSelector({
       setSelectedAgent("default");
       message.warning(t("agent.currentAgentDisabled"));
     }
-  }, [agents, selectedAgent, setSelectedAgent, message, t]);
+  }, [
+    agents,
+    selectableAgents,
+    selectedAgent,
+    setSelectedAgent,
+    message,
+    t,
+    variant,
+  ]);
 
   const agentCount = agents?.filter((a) => a.enabled).length ?? 0;
 
@@ -96,7 +135,9 @@ export default function AgentSelector({
 
   /** Chat header: match ModelSelector — Dropdown + .panel rows (no bulky Select chrome). */
   if (variant === "chatToolbar") {
-    const currentAgent = agents?.find((a) => a.id === selectedAgent);
+    const currentAgent =
+      selectableAgents.find((a) => a.id === selectedAgent) ??
+      agents?.find((a) => a.id === selectedAgent);
     const triggerLabel = currentAgent
       ? getAgentDisplayName(currentAgent, t)
       : t("agent.selectAgent");
@@ -107,10 +148,10 @@ export default function AgentSelector({
           <div className={modelUi.spinWrapper}>
             <Spin size="small" />
           </div>
-        ) : !agents?.length ? (
-          <div className={modelUi.emptyTip}>{t("agent.selectAgent")}</div>
+        ) : !selectableAgents.length ? (
+          <div className={modelUi.emptyTip}>{t("myTeam.empty")}</div>
         ) : (
-          agents.map((agent) => {
+          selectableAgents.map((agent) => {
             const isActive = agent.id === selectedAgent;
             const rowClass = [
               modelUi.modelItem,
@@ -168,10 +209,10 @@ export default function AgentSelector({
             className={styles.agentToolbarManage}
             onClick={() => {
               setDropdownOpen(false);
-              navigate("/agents");
+              navigate("/my-team");
             }}
           >
-            {t("agent.management")}
+            {t("nav.myTeam", "我的AI团队")}
             <RightOutlined />
           </button>
         </div>

@@ -53,7 +53,7 @@ export default function AITeamSection({ agents }: Props) {
             </div>
           </div>
           <button
-            onClick={() => navigate("/agents")}
+            onClick={() => navigate("/my-team")}
             style={{
               fontSize: 12,
               color: "#22d3ee",

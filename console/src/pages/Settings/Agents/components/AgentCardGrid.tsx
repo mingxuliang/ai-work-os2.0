@@ -60,6 +60,8 @@ interface AgentCardGridProps {
   isAdmin?: boolean;
   /** "myTeam" 变体下，取消召唤（非本人创建的 agent 使用）的回调 */
   onRemoveFromTeam?: (agentId: string) => void;
+  /** 点击卡片主体打开详情 */
+  onCardClick?: (agent: AgentSummary) => void;
 }
 
 interface SortableAgentCardProps {
@@ -71,6 +73,7 @@ interface SortableAgentCardProps {
   onDelete: (agentId: string) => void;
   onToggle: (agentId: string, currentEnabled: boolean) => void;
   onRemoveFromTeam?: (agentId: string) => void;
+  onCardClick?: (agent: AgentSummary) => void;
   variant: AgentCardVariant;
   isAdmin: boolean;
 }
@@ -105,6 +108,7 @@ function SortableAgentCard({
   onDelete,
   onToggle,
   onRemoveFromTeam,
+  onCardClick,
   variant,
   isAdmin,
 }: SortableAgentCardProps) {
@@ -162,7 +166,20 @@ function SortableAgentCard({
           </div>
         </>
       ) : null}
-      <div className="cbc-card-inner">
+      <div
+        className="cbc-card-inner"
+        role={onCardClick ? "button" : undefined}
+        tabIndex={onCardClick ? 0 : undefined}
+        onClick={() => onCardClick?.(agent)}
+        onKeyDown={(e) => {
+          if (!onCardClick) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onCardClick(agent);
+          }
+        }}
+        style={onCardClick ? { cursor: "pointer" } : undefined}
+      >
         <div className={styles.agentCardGripRow}>
           <CardDragGrip
             disabled={dragDisabled}
@@ -197,7 +214,7 @@ function SortableAgentCard({
               <span className={styles.statusText}>
                 {agent.enabled ? t("common.enabled") : t("agent.disabled")}
               </span>
-              {!defaultAgent ? (
+              {!defaultAgent && !isMyTeam ? (
                 <span className={styles.agentCategoryBadge}>
                   {t(categoryLabelKey(presentation.category))}
                 </span>
@@ -241,6 +258,8 @@ function SortableAgentCard({
 
         <div
           className={`cbc-agent-card-actions ${styles.agentCardActionsCompact}`}
+          onClick={(e: SyntheticEvent) => e.stopPropagation()}
+          onKeyDown={(e: SyntheticEvent) => e.stopPropagation()}
         >
           <Space className={styles.agentCardActionSpace} size={4}>
             {isMyTeam && (
@@ -370,6 +389,7 @@ export function AgentCardGrid({
   onToggle,
   onReorder,
   onRemoveFromTeam,
+  onCardClick,
   variant = "team",
   isAdmin = true,
 }: AgentCardGridProps) {
@@ -413,6 +433,7 @@ export function AgentCardGrid({
                 onDelete={onDelete}
                 onToggle={onToggle}
                 onRemoveFromTeam={onRemoveFromTeam}
+                onCardClick={onCardClick}
                 variant={variant}
                 isAdmin={isAdmin}
               />

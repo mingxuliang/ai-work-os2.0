@@ -39,24 +39,34 @@ export interface WorkspaceDownloadResult {
   filename: string;
 }
 
+function agentHeader(agentId?: string): RequestInit {
+  if (!agentId) return {};
+  return { headers: new Headers({ "X-Agent-Id": agentId }) };
+}
+
 export const workspaceApi = {
-  listFiles: () =>
-    request<MdFileInfo[]>("/workspace/files").then((files) =>
-      files.map((file) => ({
-        ...file,
-        updated_at: new Date(file.modified_time).getTime(),
-      })),
+  listFiles: (agentId?: string) =>
+    request<MdFileInfo[]>("/workspace/files", agentHeader(agentId)).then(
+      (files) =>
+        files.map((file) => ({
+          ...file,
+          updated_at: new Date(file.modified_time).getTime(),
+        })),
     ),
 
-  loadFile: (fileName: string) =>
-    request<MdFileContent>(`/workspace/files/${encodeURIComponent(fileName)}`),
+  loadFile: (fileName: string, agentId?: string) =>
+    request<MdFileContent>(
+      `/workspace/files/${encodeURIComponent(fileName)}`,
+      agentHeader(agentId),
+    ),
 
-  saveFile: (fileName: string, content: string) =>
+  saveFile: (fileName: string, content: string, agentId?: string) =>
     request<Record<string, unknown>>(
       `/workspace/files/${encodeURIComponent(fileName)}`,
       {
         method: "PUT",
         body: JSON.stringify({ content }),
+        ...agentHeader(agentId),
       },
     ),
 
@@ -116,27 +126,32 @@ export const workspaceApi = {
     return await response.json();
   },
 
-  listDailyMemory: () =>
-    request<MdFileInfo[]>("/workspace/memory").then((files) =>
-      files.map((file) => {
-        const date = file.filename.replace(".md", "");
-        return {
-          ...file,
-          date,
-          updated_at: new Date(file.modified_time).getTime(),
-        } as DailyMemoryFile;
-      }),
+  listDailyMemory: (agentId?: string) =>
+    request<MdFileInfo[]>("/workspace/memory", agentHeader(agentId)).then(
+      (files) =>
+        files.map((file) => {
+          const date = file.filename.replace(".md", "");
+          return {
+            ...file,
+            date,
+            updated_at: new Date(file.modified_time).getTime(),
+          } as DailyMemoryFile;
+        }),
     ),
 
-  loadDailyMemory: (date: string) =>
-    request<MdFileContent>(`/workspace/memory/${encodeURIComponent(date)}.md`),
+  loadDailyMemory: (date: string, agentId?: string) =>
+    request<MdFileContent>(
+      `/workspace/memory/${encodeURIComponent(date)}.md`,
+      agentHeader(agentId),
+    ),
 
-  saveDailyMemory: (date: string, content: string) =>
+  saveDailyMemory: (date: string, content: string, agentId?: string) =>
     request<Record<string, unknown>>(
       `/workspace/memory/${encodeURIComponent(date)}.md`,
       {
         method: "PUT",
         body: JSON.stringify({ content }),
+        ...agentHeader(agentId),
       },
     ),
 

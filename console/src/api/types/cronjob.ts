@@ -113,6 +113,14 @@ export interface ExecutionRecord {
   output_file?: string | null;
 }
 
+/** Backend CronExecutionRecord from GET /cron/jobs/{id}/history */
+export interface CronExecutionHistoryItem {
+  run_at: string;
+  status: "success" | "error" | "running" | "skipped" | "cancelled";
+  error?: string | null;
+  trigger?: TriggerType;
+}
+
 export type CronJobSpecInputLegacy = Record<string, unknown>;
 export type CronJobSpecOutputLegacy = Record<string, unknown>;
 export type CronJobViewLegacy = Record<string, unknown>;

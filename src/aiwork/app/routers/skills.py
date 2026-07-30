@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from aiwork.exceptions import (
     AppBaseException,
+    SkillsError,
 )
 
 from ...agents.skill_system.hub import (
@@ -28,6 +29,14 @@ from ...agents.skill_system.hub import (
     search_hub_skills,
     import_pool_skill_from_hub,
     install_skill_from_hub,
+)
+from ...agents.skill_system.market_catalog import (
+    SkillsMarketUnavailable,
+    ensure_catalog,
+    get_skill_detail,
+    install_market_skill,
+    list_categories as list_market_categories,
+    list_skills as list_market_skills,
 )
 from ...agents.skill_system import (
     SkillConflictError,
@@ -338,6 +347,14 @@ class HubInstallRequest(BaseModel):
     version: str = Field(default="", description="Optional version tag")
     enable: bool = Field(default=True, description="Enable after import")
     target_name: str = Field(default="", description="Optional renamed skill")
+
+
+class MarketInstallRequest(BaseModel):
+    id: str = Field(..., description="Market skill id: category/folder")
+    target_name: str = Field(
+        default="",
+        description="Optional local skill directory name",
+    )
 
 
 class HubInstallTaskStatus(str, Enum):
@@ -1095,6 +1112,108 @@ async def import_skill_pool_from_hub(
         "source_url": result.source_url,
         "installed_from": result.installed_from,
     }
+
+
+def _market_unavailable(exc: Exception) -> HTTPException:
+    return HTTPException(status_code=503, detail=str(exc))
+
+
+@router.get("/market/categories")
+async def market_categories() -> dict[str, Any]:
+    try:
+        catalog = await asyncio.to_thread(ensure_catalog)
+        categories = list_market_categories(catalog)
+    except SkillsMarketUnavailable as exc:
+        raise _market_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("market categories failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {"categories": categories, "synced_at": catalog.get("synced_at")}
+
+
+@router.get("/market/skills")
+async def market_list_skills(
+    q: str = "",
+    category: str = "",
+    page: int = 1,
+    page_size: int = 48,
+) -> dict[str, Any]:
+    try:
+        catalog = await asyncio.to_thread(ensure_catalog)
+        return list_market_skills(
+            q=q,
+            category=category,
+            page=page,
+            page_size=page_size,
+            catalog=catalog,
+        )
+    except SkillsMarketUnavailable as exc:
+        raise _market_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("market list failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.get("/market/skills/{skill_id:path}")
+async def market_skill_detail(skill_id: str) -> dict[str, Any]:
+    try:
+        await asyncio.to_thread(ensure_catalog)
+        return await asyncio.to_thread(get_skill_detail, skill_id)
+    except SkillsMarketUnavailable as exc:
+        raise _market_unavailable(exc) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("market detail failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@router.post("/market/refresh")
+async def market_refresh_catalog() -> dict[str, Any]:
+    try:
+        catalog = await asyncio.to_thread(ensure_catalog, force=True)
+    except SkillsMarketUnavailable as exc:
+        raise _market_unavailable(exc) from exc
+    except Exception as exc:
+        logger.exception("market refresh failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    return {
+        "refreshed": True,
+        "count": catalog.get("count") or len(catalog.get("skills") or []),
+        "synced_at": catalog.get("synced_at"),
+        "bucket": catalog.get("bucket"),
+    }
+
+
+@router.post("/market/install")
+async def market_install_skill(
+    body: MarketInstallRequest,
+) -> dict[str, Any]:
+    try:
+        result = await asyncio.to_thread(
+            install_market_skill,
+            body.id,
+            target_name=body.target_name,
+        )
+    except SkillsMarketUnavailable as exc:
+        raise _market_unavailable(exc) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SkillScanError as exc:
+        return _scan_error_response(exc)
+    except SkillsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (ValueError, AppBaseException) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("market install failed")
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if result.get("conflicts"):
+        raise HTTPException(status_code=409, detail=result)
+    if result.get("installed"):
+        await _follow_auto_update(result.get("name"))
+    return result
 
 
 @router.post("/pool/upload")

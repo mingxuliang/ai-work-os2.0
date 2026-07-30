@@ -12,7 +12,7 @@ import type {
 } from "@/api/types/agents";
 import { useAgentStore } from "@/stores/agentStore";
 import { useAgents } from "../Settings/Agents/useAgents";
-import { AgentCardGrid, AgentModal } from "../Settings/Agents/components";
+import { AgentCardGrid, AgentModal, AgentDetailModal } from "../Settings/Agents/components";
 import { PageHeader } from "@/components/PageHeader";
 import { CopawWorkbenchShell } from "@/components/CopawWorkbenchShell";
 import { reorderAgents } from "../Settings/Agents/reorder";
@@ -21,12 +21,12 @@ import {
   removeAgentPresentation,
   saveAgentPresentation,
 } from "@/utils/agentPresentationStorage";
-import { DEFAULT_TEAM_ICON_KEY } from "../Settings/Agents/components/agentTeamIcons";
 import {
-  ALL_CATEGORY_KEY,
-  CATEGORY_OPTIONS,
-  DEFAULT_CATEGORY_KEY,
-} from "../Settings/Agents/components/agentCategories";
+  appendAgentEditHistory,
+  removeAgentEditHistory,
+} from "@/utils/agentEditHistoryStorage";
+import { DEFAULT_TEAM_ICON_KEY } from "../Settings/Agents/components/agentTeamIcons";
+import { DEFAULT_CATEGORY_KEY } from "../Settings/Agents/components/agentCategories";
 import styles from "../Settings/Agents/index.module.less";
 
 export default function MyTeamPage() {
@@ -43,26 +43,19 @@ export default function MyTeamPage() {
   const { selectedAgent, setSelectedAgent } = useAgentStore();
   const [modalVisible, setModalVisible] = useState(false);
   const [editingAgent, setEditingAgent] = useState<AgentSummary | null>(null);
+  const [detailAgent, setDetailAgent] = useState<AgentSummary | null>(null);
   const [reordering, setReordering] = useState(false);
   const [form] = Form.useForm();
   const [selectedSkills, setSelectedSkills] = useState<string[]>([]);
   const installedSkillsRef = useRef<string[]>([]);
-  const [activeCategory, setActiveCategory] = useState<string>(ALL_CATEGORY_KEY);
   const [teamTick, setTeamTick] = useState(0);
   const { message } = useAppMessage();
 
-  // Only show summoned agents
+  // Only show summoned agents (no business-category filter on this page)
   const summonedAgents = useMemo(
     () => agents.filter((a) => loadAgentPresentation(a.id).summoned),
     [agents, teamTick],
   );
-
-  const filteredAgents = useMemo(() => {
-    if (activeCategory === ALL_CATEGORY_KEY) return summonedAgents;
-    return summonedAgents.filter(
-      (agent) => loadAgentPresentation(agent.id).category === activeCategory,
-    );
-  }, [summonedAgents, activeCategory]);
 
   const handleCreate = () => {
     setEditingAgent(null);
@@ -115,6 +108,7 @@ export default function MyTeamPage() {
     try {
       await deleteAgent(agentId);
       removeAgentPresentation(agentId);
+      removeAgentEditHistory(agentId);
       if (selectedAgent === agentId) {
         setSelectedAgent("default");
         message.info(t("agent.switchedToDefault"));
@@ -201,6 +195,19 @@ export default function MyTeamPage() {
           origin: "myTeam",
           summoned: true,
         });
+        appendAgentEditHistory(editingAgent.id, {
+          kind: "profile_updated",
+          title: t("agentDetail.historyUpdated"),
+          description:
+            typeof payload.name === "string" ? payload.name : editingAgent.id,
+        });
+        if (newSkills.length > 0) {
+          appendAgentEditHistory(editingAgent.id, {
+            kind: "skills_added",
+            title: t("agentDetail.historySkillsAdded"),
+            description: newSkills.join(", "),
+          });
+        }
         installedSkillsRef.current = [
           ...previousInstalledSkills,
           ...newSkills.filter((s) => !previousInstalledSkills.includes(s)),
@@ -221,6 +228,19 @@ export default function MyTeamPage() {
           origin: "myTeam",
           summoned: true,
         });
+        appendAgentEditHistory(result.id, {
+          kind: "created",
+          title: t("agentDetail.historyCreated"),
+          description:
+            typeof payload.name === "string" ? payload.name : result.id,
+        });
+        if (selectedSkills.length > 0) {
+          appendAgentEditHistory(result.id, {
+            kind: "skills_added",
+            title: t("agentDetail.historySkillsAdded"),
+            description: selectedSkills.join(", "),
+          });
+        }
         message.success(`${t("agent.createSuccess")} (ID: ${result.id})`);
       }
 
@@ -276,30 +296,6 @@ export default function MyTeamPage() {
           }
         />
 
-        <div className={styles.categoryTabBar}>
-          <button
-            type="button"
-            className={`${styles.categoryTab} ${
-              activeCategory === ALL_CATEGORY_KEY ? styles.categoryTabActive : ""
-            }`}
-            onClick={() => setActiveCategory(ALL_CATEGORY_KEY)}
-          >
-            {t("agent.categoryAll")}
-          </button>
-          {CATEGORY_OPTIONS.map((opt) => (
-            <button
-              key={opt.key}
-              type="button"
-              className={`${styles.categoryTab} ${
-                activeCategory === opt.key ? styles.categoryTabActive : ""
-              }`}
-              onClick={() => setActiveCategory(opt.key)}
-            >
-              {t(opt.labelKey)}
-            </button>
-          ))}
-        </div>
-
         <div className={styles.agentGridSection}>
           {agentsLoadError ? (
             <Alert
@@ -343,7 +339,7 @@ export default function MyTeamPage() {
             </div>
           ) : (
             <AgentCardGrid
-              agents={filteredAgents}
+              agents={summonedAgents}
               loading={loading}
               reordering={reordering}
               onEdit={handleEdit}
@@ -351,10 +347,22 @@ export default function MyTeamPage() {
               onRemoveFromTeam={handleRemoveFromTeam}
               onToggle={handleToggle}
               onReorder={handleReorder}
+              onCardClick={setDetailAgent}
               variant="myTeam"
             />
           )}
         </div>
+
+        <AgentDetailModal
+          open={!!detailAgent}
+          agent={detailAgent}
+          variant="myTeam"
+          onClose={() => setDetailAgent(null)}
+          onEdit={handleEdit}
+          onDelete={handleDelete}
+          onRemoveFromTeam={handleRemoveFromTeam}
+          onSummonChange={() => setTeamTick((n) => n + 1)}
+        />
 
         <AgentModal
           open={modalVisible}
@@ -365,6 +373,7 @@ export default function MyTeamPage() {
           onInstalledSkillsLoaded={handleInstalledSkillsLoaded}
           onSave={handleSubmit}
           onCancel={() => setModalVisible(false)}
+          hideCategory
         />
       </div>
     </CopawWorkbenchShell>

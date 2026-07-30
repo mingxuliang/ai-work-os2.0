@@ -54,12 +54,17 @@ export const chatApi = {
 
     return url;
   },
-  listChats: (params?: { user_id?: string; channel?: string }) => {
+  listChats: (
+    params?: { user_id?: string; channel?: string },
+    agentId?: string,
+  ) => {
     const searchParams = new URLSearchParams();
     if (params?.user_id) searchParams.append("user_id", params.user_id);
     if (params?.channel) searchParams.append("channel", params.channel);
     const query = searchParams.toString();
-    return request<ChatSpec[]>(`/chats${query ? `?${query}` : ""}`);
+    const opts: RequestInit = {};
+    if (agentId) opts.headers = new Headers({ "X-Agent-Id": agentId });
+    return request<ChatSpec[]>(`/chats${query ? `?${query}` : ""}`, opts);
   },
 
   createChat: (chat: Partial<ChatSpec>) =>

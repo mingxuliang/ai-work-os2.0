@@ -151,6 +151,12 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       label: t("nav.skillPool", "Skill Pool"),
     },
     {
+      key: "skill-store",
+      icon: <SparkMagicWandLine size={18} />,
+      path: "/skill-store",
+      label: t("nav.skillStore", "Skills 商店"),
+    },
+    {
       key: "tools",
       icon: <SparkToolLine size={18} />,
       path: "/tools",
@@ -396,6 +402,11 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           key: "skill-pool",
           label: collapsed ? null : t("nav.skillPool", "Skill Pool"),
           icon: <SparkOtherLine size={16} />,
+        },
+        {
+          key: "skill-store",
+          label: collapsed ? null : t("nav.skillStore", "Skills 商店"),
+          icon: <SparkMagicWandLine size={16} />,
         },
         {
           key: "environments",

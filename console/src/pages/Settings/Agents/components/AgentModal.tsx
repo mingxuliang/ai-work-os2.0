@@ -126,6 +126,8 @@ interface AgentModalProps {
   onInstalledSkillsLoaded: (skills: string[]) => void;
   onSave: () => Promise<void>;
   onCancel: () => void;
+  /** Hide business-category field (e.g. My AI Team create/edit). */
+  hideCategory?: boolean;
 }
 
 type SkillVisibility = "all" | "builtin";
@@ -139,6 +141,7 @@ export function AgentModal({
   onInstalledSkillsLoaded,
   onSave,
   onCancel,
+  hideCategory = false,
 }: AgentModalProps) {
   const { t } = useTranslation();
   const [poolSkills, setPoolSkills] = useState<PoolSkillSpec[]>([]);
@@ -405,19 +408,29 @@ export function AgentModal({
               >
                 <TeamIconPicker />
               </Form.Item>
-              <Form.Item
-                name="team_category"
-                initialValue={DEFAULT_CATEGORY_KEY}
-                label={t("agent.category")}
-                extra={t("agent.categoryHelp")}
-              >
-                <Select
-                  options={CATEGORY_OPTIONS.map((opt) => ({
-                    value: opt.key,
-                    label: t(opt.labelKey),
-                  }))}
-                />
-              </Form.Item>
+              {!hideCategory ? (
+                <Form.Item
+                  name="team_category"
+                  initialValue={DEFAULT_CATEGORY_KEY}
+                  label={t("agent.category")}
+                  extra={t("agent.categoryHelp")}
+                >
+                  <Select
+                    options={CATEGORY_OPTIONS.map((opt) => ({
+                      value: opt.key,
+                      label: t(opt.labelKey),
+                    }))}
+                  />
+                </Form.Item>
+              ) : (
+                <Form.Item
+                  name="team_category"
+                  initialValue={DEFAULT_CATEGORY_KEY}
+                  hidden
+                >
+                  <Input type="hidden" />
+                </Form.Item>
+              )}
             </div>
 
             <div className={modalStyles.agentModalSection}>
@@ -650,9 +663,11 @@ export function AgentModal({
               <div className={modalStyles.previewName}>
                 {previewName || t("agent.previewPlaceholderName")}
               </div>
-              <span className={modalStyles.previewCategoryBadge}>
-                {previewCategoryLabel}
-              </span>
+              {!hideCategory ? (
+                <span className={modalStyles.previewCategoryBadge}>
+                  {previewCategoryLabel}
+                </span>
+              ) : null}
               <p className={modalStyles.previewDesc}>
                 {previewDesc || t("agent.previewPlaceholderDesc")}
               </p>

@@ -26,9 +26,13 @@ export interface ToolInfo {
 
 export const toolsApi = {
   /**
-   * List all built-in tools
+   * List all built-in tools (optionally scoped via X-Agent-Id).
    */
-  listTools: () => request<ToolInfo[]>("/tools"),
+  listTools: (agentId?: string) => {
+    const opts: RequestInit = {};
+    if (agentId) opts.headers = new Headers({ "X-Agent-Id": agentId });
+    return request<ToolInfo[]>("/tools", opts);
+  },
 
   /**
    * Toggle tool enabled status

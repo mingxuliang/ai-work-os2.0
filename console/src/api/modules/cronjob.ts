@@ -5,6 +5,7 @@ import type {
   CronTarget,
   CronJobView,
   ExecutionRecord,
+  CronExecutionHistoryItem,
 } from "../types";
 
 const cronPath = (path: string, agentId?: string) =>
@@ -61,6 +62,12 @@ export const cronJobApi = {
 
   listCronTargets: (agentId?: string) =>
     request<CronTarget[]>(cronPath("/targets", agentId)),
+
+  /** Real backend history endpoint (prefer this over listJobRecords). */
+  listJobHistory: (jobId: string, agentId?: string) =>
+    request<CronExecutionHistoryItem[]>(
+      cronPath(`/jobs/${encodeURIComponent(jobId)}/history`, agentId),
+    ),
 
   listJobRecords: (
     jobId: string,

@@ -590,4 +590,81 @@ export const skillApi = {
         suggested_name: string;
       }>;
     }>,
+
+  listSkillMarketCategories: () =>
+    request<{
+      categories: Array<{ id: string; name: string; count: number }>;
+      synced_at?: number;
+    }>("/skills/market/categories"),
+
+  listSkillMarketSkills: (params?: {
+    q?: string;
+    category?: string;
+    page?: number;
+    page_size?: number;
+  }) => {
+    const search = new URLSearchParams();
+    if (params?.q) search.set("q", params.q);
+    if (params?.category) search.set("category", params.category);
+    if (params?.page) search.set("page", String(params.page));
+    if (params?.page_size) search.set("page_size", String(params.page_size));
+    const qs = search.toString();
+    return request<{
+      total: number;
+      page: number;
+      page_size: number;
+      synced_at?: number;
+      bucket?: string;
+      items: MarketSkillSpec[];
+    }>(`/skills/market/skills${qs ? `?${qs}` : ""}`);
+  },
+
+  getSkillMarketDetail: (skillId: string) =>
+    request<MarketSkillSpec & { content_preview?: string }>(
+      `/skills/market/skills/${skillId
+        .split("/")
+        .map(encodeURIComponent)
+        .join("/")}`,
+    ),
+
+  refreshSkillMarket: () =>
+    request<{
+      refreshed: boolean;
+      count: number;
+      synced_at?: number;
+      bucket?: string;
+    }>("/skills/market/refresh", { method: "POST" }),
+
+  installSkillFromMarket: (body: { id: string; target_name?: string }) =>
+    request<{
+      installed: boolean;
+      name?: string;
+      id?: string;
+      installed_from?: string;
+      conflicts?: Array<{
+        reason: string;
+        skill_name: string;
+        suggested_name: string;
+      }>;
+      suggested_name?: string;
+    }>("/skills/market/install", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+};
+
+export type MarketSkillSpec = {
+  id: string;
+  category: string;
+  folder: string;
+  name: string;
+  description: string;
+  version?: string;
+  license?: string;
+  author?: string;
+  author_handle?: string;
+  object_prefix?: string;
+  updated_at?: string;
+  tags?: string[];
+  instructions?: string[];
 };

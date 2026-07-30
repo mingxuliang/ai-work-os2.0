@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Spin } from "antd";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../../contexts/ThemeContext";
+import { getSummonedAgentIds } from "../../utils/agentPresentationStorage";
 import { useWorkbench } from "./useWorkbench";
 import AgentStatusGrid from "./components/AgentStatusGrid";
 import ActivityFeed from "./components/ActivityFeed";
@@ -14,13 +15,19 @@ export default function WorkbenchPage() {
   const { agents, todayStats, recentChats, loading } = useWorkbench();
   const [searchVal, setSearchVal] = useState("");
 
+  // Only agents in「我的 AI 团队」(summoned), same as chat selector / MyTeam page
+  const teamAgents = useMemo(() => {
+    const summonedIds = getSummonedAgentIds();
+    return agents.filter((a) => summonedIds.has(a.id));
+  }, [agents]);
+
   const filteredAgents = searchVal
-    ? agents.filter(
+    ? teamAgents.filter(
         (a) =>
           a.name.toLowerCase().includes(searchVal.toLowerCase()) ||
           (a.description ?? "").toLowerCase().includes(searchVal.toLowerCase()),
       )
-    : agents;
+    : teamAgents;
 
   return (
     <div
@@ -103,7 +110,10 @@ export default function WorkbenchPage() {
 
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 12 }}>
           <div style={{ fontSize: 12, color: isDark ? "#475569" : "#94a3b8" }}>
-            {t("workbench.header.agentCount", { count: agents.length, defaultValue: `${agents.length} 个 Agent` })}
+            {t("workbench.header.agentCount", {
+              count: filteredAgents.length,
+              defaultValue: `${filteredAgents.length} 个 Agent`,
+            })}
           </div>
         </div>
       </div>
