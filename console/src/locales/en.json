@@ -84,7 +84,7 @@
     "orgChart": "AI Digital Dashboard",
     "aiOkr": "AI-OKR",
     "orgBuilder": "Org Structure",
-    "materialCenter": "Knowledge Base",
+    "materialCenter": "My Files",
     "knowledgeBase": "Knowledge Base"
   },
   "materialCenter": {
@@ -118,6 +118,9 @@
   },
   "workbench": {
     "title": "Workbench",
+    "welcome": "Welcome, {{name}}",
+    "welcomePosition": "Position: {{position}}",
+    "welcomePositionUnknown": "No position assigned",
     "news": {
       "hubTitle": "News Center",
       "hubSub": "{{count}} updates · Live",

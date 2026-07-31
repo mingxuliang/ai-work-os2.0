@@ -2,6 +2,8 @@ import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../../../contexts/ThemeContext";
+import { loadAgentPresentation } from "../../../utils/agentPresentationStorage";
+import { resolveTeamIcon } from "../../Settings/Agents/components/agentTeamIcons";
 import type { AgentWithStatus } from "../useWorkbench";
 import dayjs from "dayjs";
 
@@ -160,6 +162,7 @@ export default function AgentStatusGrid({ agents }: Props) {
           const lastActive = timeAgo(
             agent.runtimeStatus?.last_finish_at ?? agent.runtimeStatus?.last_run_at ?? null,
           );
+          const teamIcon = resolveTeamIcon(loadAgentPresentation(agent.id).iconKey);
 
           return (
             <div
@@ -179,23 +182,18 @@ export default function AgentStatusGrid({ agents }: Props) {
             >
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <div style={{ position: "relative", flexShrink: 0 }}>
-                  <div
+                  <img
+                    src={teamIcon.src}
+                    alt={teamIcon.label}
                     style={{
                       width: 32,
                       height: 32,
                       borderRadius: 8,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background: "rgba(6,182,212,0.15)",
-                      border: "1px solid rgba(6,182,212,0.25)",
-                      fontSize: 14,
-                      fontWeight: 700,
-                      color: "#22d3ee",
+                      objectFit: "cover",
+                      display: "block",
+                      border: `1px solid ${isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0"}`,
                     }}
-                  >
-                    {agent.name.slice(0, 2).toUpperCase()}
-                  </div>
+                  />
                   <div
                     style={{
                       position: "absolute",

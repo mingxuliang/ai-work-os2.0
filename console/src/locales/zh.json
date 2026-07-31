@@ -84,7 +84,7 @@
     "orgChart": "AI数字化看板",
     "aiOkr": "AI-OKR 考核",
     "orgBuilder": "组织架构",
-    "materialCenter": "知识库",
+    "materialCenter": "我的文件",
     "knowledgeBase": "知识库"
   },
   "materialCenter": {
@@ -118,6 +118,9 @@
   },
   "workbench": {
     "title": "岗位工作台",
+    "welcome": "欢迎 {{name}} 登录",
+    "welcomePosition": "岗位：{{position}}",
+    "welcomePositionUnknown": "未分配岗位",
     "news": {
       "hubTitle": "新闻中心",
       "hubSub": "{{count}} 条资讯 · 实时更新",

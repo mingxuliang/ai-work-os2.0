@@ -156,43 +156,64 @@ export default function LoginPage() {
       <div className="lw-glow" style={{ width: 400, height: 400, bottom: "-15%", right: "20%", animationDelay: "-1.8s", background: "radial-gradient(circle,rgba(56,189,248,.08) 0%,transparent 65%)" }} />
 
       {/* ══════════════════════════════════════════════════════════ */}
-      {/*  LOGO — absolute top-left                                 */}
+      {/*  LOGO — mark + AI Work OS (logo gradient colors)          */}
       {/* ══════════════════════════════════════════════════════════ */}
       <div className="lw-logo-in" style={{
         position: "absolute", top: 28, left: 24, zIndex: 20,
         display: "flex", flexDirection: "column", gap: 10,
         opacity: mounted ? 1 : 0, transition: "opacity .4s",
       }}>
-        {/* Brand row */}
-        <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
-          <div className="lw-hero" style={{
-            width: 42, height: 42, borderRadius: 14, flexShrink: 0,
-            background: "linear-gradient(135deg,#3b82f6,#1d4ed8)",
-            display: "flex", alignItems: "center", justifyContent: "center",
-            boxShadow: "0 0 20px rgba(59,130,246,.5)",
-          }}>
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M12 2a10 10 0 1 0 10 10" />
-              <path d="M12 8v4l2.5 2.5" />
-              <circle cx="18" cy="6" r="3" fill="white" stroke="none" />
-            </svg>
-          </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+          <img
+            src="/logo-mark.png?v=5"
+            alt=""
+            style={{
+              height: 40,
+              width: "auto",
+              maxWidth: 120,
+              display: "block",
+              objectFit: "contain",
+              background: "transparent",
+              flexShrink: 0,
+              filter: "drop-shadow(0 4px 12px rgba(0,0,0,.35))",
+            }}
+          />
           <div>
-            <p style={{ margin: 0, color: "#fff", fontWeight: 700, fontSize: 14, letterSpacing: "0.04em" }}>AI Work OS</p>
-            <p style={{ margin: 0, color: "rgba(96,165,250,.45)", fontSize: 10, letterSpacing: "0.2em", textTransform: "uppercase" }}>智能办公操作系统</p>
+            <p style={{
+              margin: 0,
+              fontWeight: 700,
+              fontSize: 16,
+              letterSpacing: "0.04em",
+              background: "linear-gradient(90deg,#38bdf8 0%,#3b82f6 48%,#7c3aed 100%)",
+              WebkitBackgroundClip: "text",
+              backgroundClip: "text",
+              WebkitTextFillColor: "transparent",
+              color: "transparent",
+            }}>
+              AI Work OS
+            </p>
+            <p style={{
+              margin: 0,
+              color: "rgba(191,219,254,.65)",
+              fontSize: 10,
+              letterSpacing: "0.18em",
+              textTransform: "uppercase",
+            }}>
+              智能办公操作系统
+            </p>
           </div>
         </div>
-        {/* Badge — directly below brand */}
         <div style={{
           display: "inline-flex", alignItems: "center", gap: 8, alignSelf: "flex-start",
           padding: "5px 13px", borderRadius: 9999,
-          border: "1px solid rgba(96,165,250,.22)", background: "rgba(59,130,246,.07)",
+          border: "1px solid rgba(96,165,250,.22)", background: "rgba(59,130,246,.12)",
+          backdropFilter: "blur(8px)",
         }}>
           <span className="lw-badge-dot" style={{
             position: "relative", display: "block",
             width: 5, height: 5, borderRadius: "50%", background: "#60a5fa", flexShrink: 0,
           }} />
-          <span style={{ color: "rgba(147,197,253,.75)", fontSize: 10, fontWeight: 600, letterSpacing: "0.16em", textTransform: "uppercase" }}>
+          <span style={{ color: "rgba(191,219,254,.85)", fontSize: 10, fontWeight: 600, letterSpacing: "0.16em", textTransform: "uppercase" }}>
             下一代 AI 办公平台
           </span>
         </div>
@@ -296,23 +317,39 @@ export default function LoginPage() {
 
             <div style={{ padding: "36px 36px 32px" }}>
 
-              {/* Card header */}
+              {/* Card header — mark + gradient title */}
               <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 28 }}>
-                <div style={{
-                  width: 38, height: 38, borderRadius: 13, flexShrink: 0,
-                  background: "linear-gradient(135deg,#3b82f6,#1d4ed8)",
-                  display: "flex", alignItems: "center", justifyContent: "center",
-                  boxShadow: "0 0 16px rgba(59,130,246,.5)",
-                }}>
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M12 2a10 10 0 1 0 10 10" />
-                    <path d="M12 8v4l2.5 2.5" />
-                    <circle cx="18" cy="6" r="3" fill="white" stroke="none" />
-                  </svg>
-                </div>
+                <img
+                  src="/logo-mark.png?v=5"
+                  alt=""
+                  style={{
+                    height: 32,
+                    width: "auto",
+                    maxWidth: 96,
+                    display: "block",
+                    objectFit: "contain",
+                    background: "transparent",
+                    flexShrink: 0,
+                    filter: "drop-shadow(0 2px 8px rgba(59,130,246,.35))",
+                  }}
+                />
                 <div>
-                  <p style={{ margin: 0, color: "#fff", fontWeight: 700, fontSize: 13, lineHeight: 1.3 }}>AI Work OS</p>
-                  <p style={{ margin: 0, color: "rgba(96,165,250,.4)", fontSize: 10, letterSpacing: "0.14em" }}>智能办公操作系统</p>
+                  <p style={{
+                    margin: 0,
+                    fontWeight: 700,
+                    fontSize: 13,
+                    lineHeight: 1.3,
+                    background: "linear-gradient(90deg,#38bdf8 0%,#3b82f6 48%,#7c3aed 100%)",
+                    WebkitBackgroundClip: "text",
+                    backgroundClip: "text",
+                    WebkitTextFillColor: "transparent",
+                    color: "transparent",
+                  }}>
+                    AI Work OS
+                  </p>
+                  <p style={{ margin: 0, color: "rgba(96,165,250,.4)", fontSize: 10, letterSpacing: "0.14em" }}>
+                    智能办公操作系统
+                  </p>
                 </div>
               </div>
 

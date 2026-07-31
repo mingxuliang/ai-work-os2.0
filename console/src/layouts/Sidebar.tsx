@@ -103,10 +103,16 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       label: t("nav.chat"),
     },
     {
+      key: "my-team",
+      icon: <SparkUserGroupLine size={18} />,
+      path: "/my-team",
+      label: t("nav.myTeam", "我的AI团队"),
+    },
+    {
       key: "material-center",
       icon: <SparkBrowseLine size={18} />,
       path: "/material-center",
-      label: t("nav.materialCenter", "知识库"),
+      label: t("nav.materialCenter", "我的文件"),
     },
     {
       key: "org-chart",
@@ -191,12 +197,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       icon: <SparkAgentLine size={18} />,
       path: "/agents",
       label: t("nav.agents"),
-    },
-    {
-      key: "my-team",
-      icon: <SparkUserGroupLine size={18} />,
-      path: "/my-team",
-      label: t("nav.myTeam", "我的AI团队"),
     },
     {
       key: "models",
@@ -290,8 +290,13 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
       icon: <Bot size={16} strokeWidth={1.85} aria-hidden />,
     },
     {
+      key: "my-team",
+      label: collapsed ? null : t("nav.myTeam", "我的AI团队"),
+      icon: <SparkUserGroupLine size={16} />,
+    },
+    {
       key: "material-center",
-      label: collapsed ? null : t("nav.materialCenter", "知识库"),
+      label: collapsed ? null : t("nav.materialCenter", "我的文件"),
       icon: <SparkBrowseLine size={16} />,
     },
     {
@@ -387,11 +392,6 @@ export default function Sidebar({ selectedKey }: SidebarProps) {
           key: "agents",
           label: collapsed ? null : t("nav.agents"),
           icon: <SparkAgentLine size={16} />,
-        },
-        {
-          key: "my-team",
-          label: collapsed ? null : t("nav.myTeam", "我的AI团队"),
-          icon: <SparkUserGroupLine size={16} />,
         },
         {
           key: "models",

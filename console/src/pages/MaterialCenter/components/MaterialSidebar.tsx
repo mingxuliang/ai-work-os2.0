@@ -45,40 +45,42 @@ const MaterialSidebar = ({
     display: 'flex' as const,
     alignItems: 'center' as const,
     gap: 8,
-    padding: '7px 10px',
+    padding: '9px 12px',
     borderRadius: SYS.radiusSM,
     border: 'none' as const,
     background: isActive ? SYS.primaryBg : 'transparent',
     color: isActive ? SYS.primary : SYS.textSub,
     cursor: 'pointer' as const,
     fontFamily: SYS.fontFamily,
-    fontSize: 12,
+    fontSize: 14,
     fontWeight: isActive ? 600 : 400,
     textAlign: 'left' as const,
     transition: 'background 0.15s',
+    lineHeight: 1.4,
   });
 
   const childBtn = (isActive: boolean) => ({
     width: '100%' as const,
     display: 'flex' as const,
     alignItems: 'center' as const,
-    gap: 6,
-    padding: '5px 8px',
+    gap: 8,
+    padding: '7px 10px',
     borderRadius: 6,
     border: 'none' as const,
     background: isActive ? SYS.primaryBg : 'transparent',
     color: isActive ? SYS.primary : SYS.textSub,
     cursor: 'pointer' as const,
     fontFamily: SYS.fontFamily,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: isActive ? 600 : 400,
     textAlign: 'left' as const,
     transition: 'background 0.15s',
+    lineHeight: 1.4,
   });
 
   const badge = (isActive: boolean) => ({
-    fontSize: 10,
-    padding: '1px 5px',
+    fontSize: 12,
+    padding: '1px 6px',
     borderRadius: 4,
     background: isActive ? '#dbeafe' : '#f1f5f9',
     color: isActive ? SYS.primary : SYS.textMuted,
@@ -110,7 +112,7 @@ const MaterialSidebar = ({
     <aside
       className="material-sidebar"
       style={{
-        width: 220,
+        width: 240,
         flexShrink: 0,
         background: SYS.bgCard,
         borderRight: `1px solid ${SYS.borderBase}`,
@@ -118,14 +120,15 @@ const MaterialSidebar = ({
         flexDirection: 'column',
         height: '100%',
         fontFamily: SYS.fontFamily,
+        fontSize: 14,
       }}
     >
       {/* Header */}
       <div style={{ padding: '16px 16px 12px', borderBottom: `1px solid ${SYS.borderBase}` }}>
-        <h2 style={{ fontSize: 13, fontWeight: 600, color: SYS.textMain, margin: 0 }}>素材分类</h2>
+        <h2 style={{ fontSize: 15, fontWeight: 600, color: SYS.textMain, margin: 0 }}>文件分类</h2>
       </div>
 
-      <nav className="migrated-scroll" style={{ flex: 1, padding: '8px 8px', display: 'flex', flexDirection: 'column', gap: 1 }}>
+      <nav className="migrated-scroll" style={{ flex: 1, padding: '10px 8px', display: 'flex', flexDirection: 'column', gap: 2 }}>
         {/* 平台产出物 — 可展开，置于顶部 */}
         {(() => {
           const isPlatformActive = activeCategory === 'platform-outputs' || activeCategory.startsWith('platform-outputs:');
@@ -139,8 +142,8 @@ const MaterialSidebar = ({
                 onMouseEnter={(e) => { if (!isPlatformActive) e.currentTarget.style.background = '#f8fafc'; }}
                 onMouseLeave={(e) => { if (!isPlatformActive) e.currentTarget.style.background = 'transparent'; }}
               >
-                <span style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: isPlatformActive ? SYS.primary : SYS.textMuted }}>
-                  <i className="ri-robot-line" style={{ fontSize: 14 }} />
+                <span style={{ width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: isPlatformActive ? SYS.primary : SYS.textMuted }}>
+                  <i className="ri-robot-line" style={{ fontSize: 16 }} />
                 </span>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>平台产出物</span>
                 {llmOutputCount !== undefined && (
@@ -148,10 +151,10 @@ const MaterialSidebar = ({
                     {llmOutputCount}
                   </span>
                 )}
-                <i className="ri-arrow-down-s-line" style={{ fontSize: 13, color: SYS.textMuted, transition: 'transform 0.2s', transform: isExp ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
+                <i className="ri-arrow-down-s-line" style={{ fontSize: 15, color: SYS.textMuted, transition: 'transform 0.2s', transform: isExp ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
               </button>
               {isExp && (
-                <div style={{ marginLeft: 12, paddingLeft: 8, borderLeft: `1px solid ${SYS.borderBase}`, marginTop: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <div style={{ marginLeft: 12, paddingLeft: 8, borderLeft: `1px solid ${SYS.borderBase}`, marginTop: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {platformTypes.map((pt) => {
                     const isCA = activeCategory === pt.id;
                     return (
@@ -163,7 +166,7 @@ const MaterialSidebar = ({
                         onMouseEnter={(e) => { if (!isCA) e.currentTarget.style.background = '#f8fafc'; }}
                         onMouseLeave={(e) => { if (!isCA) e.currentTarget.style.background = 'transparent'; }}
                       >
-                        <i className={pt.icon} style={{ fontSize: 12, color: isCA ? SYS.primary : pt.color, flexShrink: 0 }} />
+                        <i className={pt.icon} style={{ fontSize: 14, color: isCA ? SYS.primary : pt.color, flexShrink: 0 }} />
                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{pt.label}</span>
                         <span style={badge(isCA)}>{llmOutputTypeCounts?.[pt.type] ?? 0}</span>
                       </button>
@@ -178,7 +181,7 @@ const MaterialSidebar = ({
         {/* Divider */}
         <div style={{ padding: '6px 4px 4px', display: 'flex', alignItems: 'center', gap: 6 }}>
           <div style={{ flex: 1, height: 1, background: SYS.borderBase }} />
-          <span style={{ fontSize: 10, color: SYS.textMuted, fontWeight: 600, letterSpacing: '0.06em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>手动上传</span>
+          <span style={{ fontSize: 12, color: SYS.textMuted, fontWeight: 600, letterSpacing: '0.04em', whiteSpace: 'nowrap' }}>手动上传</span>
           <div style={{ flex: 1, height: 1, background: SYS.borderBase }} />
         </div>
 
@@ -196,18 +199,18 @@ const MaterialSidebar = ({
                 onMouseEnter={(e) => { if (!isActive) e.currentTarget.style.background = '#f8fafc'; }}
                 onMouseLeave={(e) => { if (!isActive) e.currentTarget.style.background = 'transparent'; }}
               >
-                <span style={{ width: 20, height: 20, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: isActive ? SYS.primary : SYS.textMuted }}>
-                  <i className={cat.icon} style={{ fontSize: 14 }} />
+                <span style={{ width: 22, height: 22, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, color: isActive ? SYS.primary : SYS.textMuted }}>
+                  <i className={cat.icon} style={{ fontSize: 16 }} />
                 </span>
                 <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cat.label}</span>
                 <span style={badge(isActive)}>{cat.count}</span>
                 {hasChildren && (
-                  <i className="ri-arrow-down-s-line" style={{ fontSize: 13, color: SYS.textMuted, transition: 'transform 0.2s', transform: isExp ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
+                  <i className="ri-arrow-down-s-line" style={{ fontSize: 15, color: SYS.textMuted, transition: 'transform 0.2s', transform: isExp ? 'rotate(180deg)' : 'none', flexShrink: 0 }} />
                 )}
               </button>
 
               {hasChildren && isExp && (
-                <div style={{ marginLeft: 12, paddingLeft: 8, borderLeft: `1px solid ${SYS.borderBase}`, marginTop: 2, display: 'flex', flexDirection: 'column', gap: 1 }}>
+                <div style={{ marginLeft: 12, paddingLeft: 8, borderLeft: `1px solid ${SYS.borderBase}`, marginTop: 2, display: 'flex', flexDirection: 'column', gap: 2 }}>
                   {cat.children!.map((child) => {
                     const isCA = activeCategory === child.id;
                     return (
@@ -221,7 +224,7 @@ const MaterialSidebar = ({
                       >
                         <i
                           className={uploadTypeIconByLabel.get(child.label) ?? 'ri-file-line'}
-                          style={{ fontSize: 12, color: isCA ? SYS.primary : uploadTypeColorByLabel.get(child.label) ?? SYS.textMuted, flexShrink: 0 }}
+                          style={{ fontSize: 14, color: isCA ? SYS.primary : uploadTypeColorByLabel.get(child.label) ?? SYS.textMuted, flexShrink: 0 }}
                         />
                         <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayFileTypeLabel(child.label)}</span>
                         <span style={badge(isCA)}>{child.count}</span>
@@ -239,8 +242,8 @@ const MaterialSidebar = ({
       {/* Storage */}
       <div style={{ padding: '12px 16px', borderTop: `1px solid ${SYS.borderBase}` }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 5 }}>
-          <span style={{ fontSize: 11, color: SYS.textSub, fontWeight: 500 }}>已用空间</span>
-          <span style={{ fontSize: 11, color: SYS.primary, fontWeight: 600 }}>{formatFileSize(totalBytes)}</span>
+          <span style={{ fontSize: 13, color: SYS.textSub, fontWeight: 500 }}>已用空间</span>
+          <span style={{ fontSize: 13, color: SYS.primary, fontWeight: 600 }}>{formatFileSize(totalBytes)}</span>
         </div>
       </div>
     </aside>

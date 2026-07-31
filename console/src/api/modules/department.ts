@@ -22,6 +22,12 @@ export const departmentApi = {
   getOne: (id: number) =>
     request<Department>(`/departments/${id}`),
 
+  /** 查询用户所属部门 id */
+  getUserDepartment: (userId: number) =>
+    request<{ user_id: number; department_id: number | null }>(
+      `/departments/users/${userId}`,
+    ),
+
   create: (body: CreateDepartmentBody) =>
     request<Department>('/departments', {
       method: 'POST',

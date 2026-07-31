@@ -1,18 +1,9 @@
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useTheme } from "../../../contexts/ThemeContext";
+import { loadAgentPresentation } from "../../../utils/agentPresentationStorage";
+import { resolveTeamIcon } from "../../Settings/Agents/components/agentTeamIcons";
 import type { AgentWithStatus } from "../useWorkbench";
-
-const ACCENT_COLORS = [
-  "#06b6d4",
-  "#4ade80",
-  "#a78bfa",
-  "#f59e0b",
-  "#f97316",
-  "#ef4444",
-  "#8b5cf6",
-  "#22d3ee",
-];
 
 interface Props {
   agents: AgentWithStatus[];
@@ -72,8 +63,9 @@ export default function AITeamSection({ agents }: Props) {
         </div>
 
         <div style={{ display: "flex", gap: 12, overflowX: "auto", paddingBottom: 4 }}>
-          {agents.map((agent, idx) => {
-            const accentColor = ACCENT_COLORS[idx % ACCENT_COLORS.length];
+          {agents.map((agent) => {
+            const presentation = loadAgentPresentation(agent.id);
+            const teamIcon = resolveTeamIcon(presentation.iconKey);
             const dot = getStatusDot(agent);
 
             return (
@@ -93,24 +85,19 @@ export default function AITeamSection({ agents }: Props) {
                   flexDirection: "column",
                 }}
               >
-                <div style={{ position: "relative", width: 40, height: 40, marginBottom: 12 }}>
-                  <div
+                <div style={{ position: "relative", width: 48, height: 48, marginBottom: 12 }}>
+                  <img
+                    src={teamIcon.src}
+                    alt={teamIcon.label}
                     style={{
-                      width: 40,
-                      height: 40,
-                      borderRadius: 10,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background: accentColor + "33",
-                      border: `1px solid ${accentColor}44`,
-                      fontSize: 13,
-                      fontWeight: 700,
-                      color: accentColor,
+                      width: 48,
+                      height: 48,
+                      borderRadius: 12,
+                      objectFit: "cover",
+                      display: "block",
+                      border: `1px solid ${isDark ? "rgba(255,255,255,0.1)" : "#e2e8f0"}`,
                     }}
-                  >
-                    {agent.name.slice(0, 2).toUpperCase()}
-                  </div>
+                  />
                   <div
                     style={{
                       position: "absolute",
@@ -171,7 +158,6 @@ export default function AITeamSection({ agents }: Props) {
                   </div>
                 )}
 
-                {/* 分配任务按钮 */}
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
@@ -182,9 +168,9 @@ export default function AITeamSection({ agents }: Props) {
                     width: "100%",
                     padding: "6px 0",
                     borderRadius: 8,
-                    border: `1px solid ${accentColor}55`,
-                    background: accentColor + "18",
-                    color: accentColor,
+                    border: "1px solid rgba(34,211,238,0.35)",
+                    background: "rgba(34,211,238,0.10)",
+                    color: "#0891b2",
                     fontSize: 12,
                     fontWeight: 600,
                     cursor: "pointer",
@@ -195,12 +181,10 @@ export default function AITeamSection({ agents }: Props) {
                     transition: "all 0.18s",
                   }}
                   onMouseEnter={(e) => {
-                    (e.currentTarget as HTMLButtonElement).style.background = accentColor + "30";
-                    (e.currentTarget as HTMLButtonElement).style.borderColor = accentColor + "88";
+                    (e.currentTarget as HTMLButtonElement).style.background = "rgba(34,211,238,0.20)";
                   }}
                   onMouseLeave={(e) => {
-                    (e.currentTarget as HTMLButtonElement).style.background = accentColor + "18";
-                    (e.currentTarget as HTMLButtonElement).style.borderColor = accentColor + "55";
+                    (e.currentTarget as HTMLButtonElement).style.background = "rgba(34,211,238,0.10)";
                   }}
                 >
                   <i className="ri-send-plane-line" style={{ fontSize: 12 }} />

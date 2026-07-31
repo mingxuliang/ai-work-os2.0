@@ -1,4 +1,4 @@
-// ─── MainLayout ───────────────────────────────────────────────────────────────
+// ??? MainLayout ???????????????????????????????????????????????????????????????
 .mainLayout {
   height: 100vh;
 }
@@ -7,7 +7,7 @@
   // inherits from .page-container global class; add local overrides here if needed
 }
 
-// ─── Header（顶栏与 agent 团队工作台一致：浅磨砂条�?─────────────────────────
+// ??? Header???? agent ???????????????????????????????????????
 .header {
   height: 56px;
   padding: 0 24px;
@@ -34,7 +34,20 @@
   color: #0f172a;
 }
 
-// ─── Sidebar（agent团队 DashboardSidebar：浅色主导航 / 深色为变体） ────────────
+/* Match logo ribbon: cyan ? blue ? purple */
+.brandTitleGradient {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  background: linear-gradient(90deg, #38bdf8 0%, #3b82f6 48%, #7c3aed 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
+}
+
+// ??? Sidebar?agent?? DashboardSidebar?????? / ?????? ????????????
 .siderAmbientOrbA,
 .siderAmbientOrbB {
   position: absolute;
@@ -86,7 +99,7 @@
     display: none;
   }
 
-  // antd Sider wraps children in .xxx-layout-sider-children �?make it
+  // antd Sider wraps children in .xxx-layout-sider-children ??make it
   // a flex column so our flex: 1 + collapse-button-at-bottom layout works.
   :global {
     [class*="-layout-sider-children"] {
@@ -97,7 +110,7 @@
     }
   }
 
-  /* 浅色：整块导航（工作�?+ 设置）共用同一磨砂底，避免下层菜单落到灰底�?*/
+  /* ????????????+ ???????????????????????*/
   .sidebarNavCard {
     position: relative;
     z-index: 1;
@@ -184,7 +197,7 @@
     }
   }
 
-  /* 浅色：主导航条目（圆�?+ 选中浅蓝�?+ 图标方格�?*/
+  /* ????????????+ ??????+ ??????*/
   &:not(.siderDark) :global {
     .qwenpaw-menu-submenu-title {
       font-size: 11px !important;
@@ -284,7 +297,7 @@
     }
   }
 
-  /* 深色：同一套圆角方�?*/
+  /* ???????????*/
   &.siderDark {
     background: var(--copaw-dm-rail, #0e1525) !important;
     border-right-color: var(--copaw-dm-border, rgba(255, 255, 255, 0.06)) !important;
@@ -395,7 +408,7 @@
     }
   }
 
-  /* 底部账号区、折叠按钮、收起图标导�?�?与浅色主导航一�?*/
+  /* ?????????????????????????????*/
   .authActions {
     position: relative;
     z-index: 1;
@@ -560,7 +573,7 @@
   width: auto;
 }
 
-/* ─── Dark mode overrides ─────────────────────────────────────────────────── */
+/* ??? Dark mode overrides ??????????????????????????????????????????????????? */
 :global(.dark-mode) {
   .header {
     background: rgba(10, 15, 30, 0.95) !important;
@@ -587,7 +600,7 @@
       }
     }
 
-    /* Header input/search bar (opt平台 WorkbenchHeader style) */
+    /* Header input/search bar (opt?? WorkbenchHeader style) */
     :global(.qwenpaw-input),
     :global(.ant-input),
     :global(.qwenpaw-input-affix-wrapper),
@@ -618,11 +631,19 @@
     text-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
   }
 
+  .brandTitleGradient {
+    background: linear-gradient(90deg, #38bdf8 0%, #60a5fa 48%, #a78bfa 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    color: transparent;
+  }
+
   .siderTop {
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
 
-  /* Sider nav card �?glassmorphism depth */
+  /* Sider nav card ??glassmorphism depth */
   .sider.siderDark .sidebarNavCard {
     background: rgba(17, 24, 39, 0.88) !important;
     border-color: rgba(255, 255, 255, 0.06) !important;
@@ -632,7 +653,7 @@
     backdrop-filter: blur(12px);
   }
 
-  /* Ambient orbs in dark �?subtle cyan tint */
+  /* Ambient orbs in dark ??subtle cyan tint */
   .sider.siderDark .siderAmbientOrbA {
     background: radial-gradient(
       circle,

@@ -6,6 +6,7 @@ import { CopawWorkbenchShell } from "@/components/CopawWorkbenchShell";
 import { api } from "@/api";
 import type { MarketSkillSpec } from "@/api/modules/skill";
 import { FEATURED_COLLECTIONS, categoryIcon } from "./mocks";
+import { SkillCategoryIcon } from "./SkillCategoryIcon";
 import styles from "./index.module.less";
 
 type StoreSkillView = {
@@ -162,6 +163,75 @@ function HeroBanners({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 
+function StorePagination({
+  page,
+  total,
+  pageSize,
+  onChange,
+}: {
+  page: number;
+  total: number;
+  pageSize: number;
+  onChange: (p: number) => void;
+}) {
+  const totalPages = Math.ceil(total / pageSize);
+
+  const pages = (() => {
+    if (totalPages <= 7) return Array.from({ length: totalPages }, (_, i) => i + 1);
+    const items: (number | "…")[] = [];
+    items.push(1);
+    if (page > 4) items.push("…");
+    for (let i = Math.max(2, page - 2); i <= Math.min(totalPages - 1, page + 2); i++) {
+      items.push(i);
+    }
+    if (page < totalPages - 3) items.push("…");
+    items.push(totalPages);
+    return items;
+  })();
+
+  return (
+    <div className={styles.pagination}>
+      <span className={styles.paginationInfo}>
+        共 {total} 个 · 第 {page} / {totalPages} 页
+      </span>
+      <div className={styles.paginationBtns}>
+        <button
+          className={styles.pageBtn}
+          disabled={page <= 1}
+          onClick={() => onChange(page - 1)}
+          type="button"
+        >
+          <i className="ri-arrow-left-s-line" />
+          上一页
+        </button>
+        {pages.map((p, idx) =>
+          p === "…" ? (
+            <span key={`ellipsis-${idx}`} className={styles.pageEllipsis}>…</span>
+          ) : (
+            <button
+              key={p}
+              type="button"
+              className={`${styles.pageBtn} ${p === page ? styles.pageBtnActive : ""}`}
+              onClick={() => onChange(p as number)}
+            >
+              {p}
+            </button>
+          )
+        )}
+        <button
+          className={styles.pageBtn}
+          disabled={page >= totalPages}
+          onClick={() => onChange(page + 1)}
+          type="button"
+        >
+          下一页
+          <i className="ri-arrow-right-s-line" />
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function SkillCard({
   skill,
   installed,
@@ -200,60 +270,53 @@ function SkillCard({
     setTimeout(() => setJustAdded(false), 2000);
   };
 
-  const initial = (skill.name || "?").trim().charAt(0).toUpperCase();
 
   return (
     <div className={styles.card}>
-      <div className={styles.cardHeader}>
-        <div className={styles.cardIdentity}>
-          <div className={styles.cardIconLetter} aria-hidden>
-            {initial}
-          </div>
-          <div style={{ minWidth: 0 }}>
-            <h3 className={styles.cardName}>{skill.name}</h3>
-            <div className={styles.cardMeta}>
-              {skill.authorHandle ? (
-                <span>
-                  <i className="ri-user-line" />
-                  {skill.authorHandle}
-                </span>
-              ) : null}
+      {/* Header: icon + name + meta */}
+      <div className={styles.cardTop}>
+        <SkillCategoryIcon category={skill.category} size={52} />
+        <div className={styles.cardInfo}>
+          <h3 className={styles.cardName}>{skill.name}</h3>
+          <div className={styles.cardMeta}>
+            {skill.authorHandle ? (
               <span>
-                <i className="ri-folder-line" />
-                {skill.category}
+                <i className="ri-user-3-line" />
+                {skill.authorHandle}
               </span>
-            </div>
+            ) : null}
+            <span className={styles.cardCategory}>
+              <i className="ri-price-tag-3-line" />
+              {skill.category}
+            </span>
           </div>
         </div>
       </div>
 
-      <div className={styles.tags}>
-        {skill.tags.map((tag) => (
-          <span key={tag} className={styles.tag}>
-            {tag}
-          </span>
-        ))}
-        {skill.license ? (
-          <span className={`${styles.tag} ${styles.tagLicense}`}>
-            {skill.license}
-          </span>
-        ) : null}
-      </div>
+      {/* Description */}
+      <p className={styles.cardDesc}>
+        {skill.description ||
+          skill.instructions[0] ||
+          t("skillStore.noDescription")}
+      </p>
 
-      <div className={styles.instructions}>
-        {(skill.instructions.length
-          ? skill.instructions
-          : [skill.description || t("skillStore.noDescription")]
-        ).map((inst, idx) => (
-          <div key={idx} className={styles.instRow}>
-            <span className={styles.instIdx}>
-              {String(idx + 1).padStart(2, "0")}
+      {/* Tags row */}
+      {skill.tags.length > 0 && (
+        <div className={styles.tags}>
+          {skill.tags.slice(0, 4).map((tag) => (
+            <span key={tag} className={styles.tag}>
+              {tag}
             </span>
-            <span className={styles.instText}>{inst}</span>
-          </div>
-        ))}
-      </div>
+          ))}
+          {skill.license ? (
+            <span className={`${styles.tag} ${styles.tagLicense}`}>
+              {skill.license}
+            </span>
+          ) : null}
+        </div>
+      )}
 
+      {/* Footer: install button */}
       <div className={styles.cardFooter}>
         <div ref={confirmRef}>
           {installed || justAdded ? (
@@ -284,9 +347,8 @@ function SkillCard({
               type="button"
               className={styles.addBtn}
               onClick={() => setShowConfirm(true)}
-              disabled={installing}
             >
-              <i className="ri-add-line" />
+              <i className="ri-download-cloud-line" />
               {t("skillStore.installToPool")}
             </button>
           )}
@@ -299,9 +361,11 @@ function SkillCard({
 export default function SkillStorePage() {
   const { t } = useTranslation();
   const { message } = useAppMessage();
+  const PAGE_SIZE = 20;
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [category, setCategory] = useState("all");
+  const [page, setPage] = useState(1);
   const [categories, setCategories] = useState<
     Array<{ id: string; name: string; count: number }>
   >([]);
@@ -320,7 +384,10 @@ export default function SkillStorePage() {
   const [formError, setFormError] = useState("");
 
   useEffect(() => {
-    const timer = setTimeout(() => setDebouncedQuery(searchQuery.trim()), 300);
+    const timer = setTimeout(() => {
+      setDebouncedQuery(searchQuery.trim());
+      setPage(1);
+    }, 300);
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
@@ -344,8 +411,8 @@ export default function SkillStorePage() {
       const res = await api.listSkillMarketSkills({
         q: debouncedQuery || undefined,
         category: category === "all" ? undefined : category,
-        page: 1,
-        page_size: 96,
+        page,
+        page_size: PAGE_SIZE,
       });
       setSkills((res.items || []).map(toStoreSkill));
       setTotal(res.total || 0);
@@ -357,7 +424,7 @@ export default function SkillStorePage() {
     } finally {
       setLoading(false);
     }
-  }, [category, debouncedQuery, message, t]);
+  }, [category, debouncedQuery, page, message, t, PAGE_SIZE]);
 
   useEffect(() => {
     void loadPoolInstalled();
@@ -472,7 +539,7 @@ export default function SkillStorePage() {
                 className={`${styles.catTab} ${
                   category === cat.id ? styles.catTabActive : ""
                 }`}
-                onClick={() => setCategory(cat.id)}
+                onClick={() => { setCategory(cat.id); setPage(1); }}
               >
                 <i className={cat.icon} />
                 {cat.name}
@@ -541,6 +608,15 @@ export default function SkillStorePage() {
             <p className={styles.emptyHint}>{t("skillStore.emptyHint")}</p>
           </div>
         ) : null}
+
+        {!loading && total > PAGE_SIZE && (
+          <StorePagination
+            page={page}
+            total={total}
+            pageSize={PAGE_SIZE}
+            onChange={setPage}
+          />
+        )}
       </div>
 
       {isModalOpen ? (
