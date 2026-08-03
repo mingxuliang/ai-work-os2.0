@@ -9,11 +9,12 @@ Core architecture:
     ├── IterationGate — iteration limit (universal)
     └── BudgetGate    — token budget (GoalMode)
 
-ReactGates:
-    register_react_gates — always-on Gate registration
-    for ReAct default mode.
+DefaultMode owns always-on gate registration for ordinary ReAct turns.
+Custom modes are compiled from the gate catalog via ``compiler``.
 """
 
+from .catalog import get_gate_catalog
+from .compiler import compile_loop_mode
 from .gates import (
     DoomLoopGate,
     GoalStatusRubric,
@@ -26,7 +27,6 @@ from .gates import (
     StopHandlerRegistration,
     StopHandlerResult,
 )
-from .react_gates import register_react_gates, resolve_max_iterations
 
 __all__ = [
     "DoomLoopGate",
@@ -39,6 +39,6 @@ __all__ = [
     "StopHandler",
     "StopHandlerRegistration",
     "StopHandlerResult",
-    "register_react_gates",
-    "resolve_max_iterations",
+    "compile_loop_mode",
+    "get_gate_catalog",
 ]

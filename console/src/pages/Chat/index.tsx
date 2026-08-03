@@ -55,6 +55,14 @@ import SenderCharWarning from "./components/SenderCharWarning";
 import ExecutionEnvironmentSelector from "./components/ExecutionEnvironmentSelector";
 import ChatSenderPrefixActions from "./components/ChatSenderPrefixActions";
 import RunModeSelector, { type RunMode } from "./components/RunModeSelector";
+import { LoopModeSelector } from "../../components/LoopInput";
+import {
+  beginLoopModeSubmission,
+  fetchActiveLoopMode,
+  fetchAvailableLoopModes,
+  markLoopModeRunning,
+  useLoopStore,
+} from "../../stores/loopStore";
 import { useExecutionEnvironment } from "../../hooks/useExecutionEnvironment";
 import { useAuthenticatedUserId } from "../../hooks/useAuthenticatedUserId";
 import { usePendingChatFilesStore } from "../../stores/pendingChatFilesStore";
@@ -795,6 +803,8 @@ export default function ChatPage() {
     [planEnabled, runMode],
   );
 
+  const loopModeSelectorEl = useMemo(() => <LoopModeSelector />, []);
+
   const senderPrefixActions = useMemo(
     () => (
       <ChatSenderPrefixActions
@@ -808,6 +818,7 @@ export default function ChatPage() {
         }
         environmentSelector={executionEnvironmentSelector}
         runModeSelector={runModeSelectorEl}
+        loopModeSelector={loopModeSelectorEl}
       />
     ),
     [
@@ -815,8 +826,23 @@ export default function ChatPage() {
       handleWhisperTranscription,
       executionEnvironmentSelector,
       runModeSelectorEl,
+      loopModeSelectorEl,
     ],
   );
+
+  useEffect(() => {
+    const controller = new AbortController();
+    useLoopStore.getState().resetSessionMode();
+    void fetchAvailableLoopModes(controller.signal);
+    if (chatId) {
+      void fetchActiveLoopMode({
+        chatId,
+        sessionId: window.currentSessionId || chatId,
+        signal: controller.signal,
+      });
+    }
+    return () => controller.abort();
+  }, [chatId, selectedAgent]);
 
   useMessageHistoryNavigation(chatRef, isChatActive, isComposingRef);
 
@@ -1177,7 +1203,7 @@ export default function ChatPage() {
       if (pending.length > 0) {
         const senderContainer = document.querySelector('[class*="sender"]');
         const textarea = senderContainer?.querySelector('textarea') as HTMLTextAreaElement | null;
-        const query = textarea?.value ?? '';
+        const query = beginLoopModeSubmission(textarea?.value ?? '');
 
         const fileList = pending.map((f) => ({
           uid: f.id,
@@ -1192,6 +1218,14 @@ export default function ChatPage() {
         usePendingChatFilesStore.getState().clear();
         chatRef.current?.input.submit({ query, fileList });
         return false;
+      }
+
+      // Prefix selected non-default loop mode slash command when needed.
+      if (ta) {
+        const prepared = beginLoopModeSubmission(ta.value);
+        if (prepared !== ta.value) {
+          setTextareaValue(ta, prepared);
+        }
       }
 
       return true;
@@ -1265,6 +1299,7 @@ export default function ChatPage() {
         fetch: customFetch,
         responseParser: (chunk: string) => {
           const payload = JSON.parse(chunk) as Record<string, unknown>;
+          markLoopModeRunning();
 
           if (payloadRequestsHistoryClear(payload)) {
             pendingClearHistoryRef.current = true;

@@ -72,7 +72,12 @@ class AgentBuilder:
             tools = []
 
         if extra_tools:
-            tools.extend(extra_tools)
+            tools.extend(
+                self._filter_extra_tools_for_subagent(
+                    extra_tools,
+                    request_context,
+                ),
+            )
 
         if memory_tools:
             from ..governance import PolicyGuardedTool
@@ -92,6 +97,50 @@ class AgentBuilder:
         )
 
         return Toolkit(tools=tools, skills_or_loaders=skill_dirs)
+
+    @staticmethod
+    def _tool_name(tool: Any) -> str:
+        """Best-effort tool name for whitelist filtering."""
+        name = getattr(tool, "name", None)
+        if isinstance(name, str) and name:
+            return name
+        fn = getattr(tool, "func", None) or getattr(tool, "_func", None)
+        if callable(fn):
+            return getattr(fn, "__name__", "") or ""
+        return getattr(tool, "__name__", "") or ""
+
+    @classmethod
+    def apply_subagent_tool_whitelist(
+        cls,
+        tools: Iterable[Any],
+        request_context: dict[str, Any] | None,
+    ) -> list[Any]:
+        """Filter *tools* by ``subagent_allowed_tools`` (final-pass API).
+
+        - ``None`` / non-list → inherit (no filter)
+        - ``[]`` → deny all tools
+        - non-empty list → keep only matching python tool names
+        """
+        items = list(tools)
+        whitelist = (request_context or {}).get("subagent_allowed_tools")
+        if not isinstance(whitelist, list):
+            return items
+        if not whitelist:
+            return []
+        allow = set(whitelist)
+        return [t for t in items if cls._tool_name(t) in allow]
+
+    @classmethod
+    def _filter_extra_tools_for_subagent(
+        cls,
+        extra_tools: Iterable[Any],
+        request_context: dict[str, Any] | None,
+    ) -> list[Any]:
+        """Apply ``subagent_allowed_tools`` to post-list_tools extras."""
+        return cls.apply_subagent_tool_whitelist(
+            extra_tools,
+            request_context,
+        )
 
     @staticmethod
     def _resolve_skill_loader_dirs(
@@ -174,6 +223,11 @@ class AgentBuilder:
             )
         except Exception:
             effective_skills = []
+
+        subagent_skills = request_context.get("subagent_skills")
+        if isinstance(subagent_skills, list):
+            parent_set = set(effective_skills)
+            effective_skills = [s for s in subagent_skills if s in parent_set]
 
         # Compute active modes.
         active_modes: set[str] = set()
@@ -296,9 +350,7 @@ class AgentBuilder:
 
         running_config = agent_config.running
 
-        from ..loop.react_gates import (
-            resolve_max_iterations,
-        )
+        from ..modes.default import resolve_max_iterations
 
         effective_max = resolve_max_iterations(running_config)
 
@@ -322,13 +374,7 @@ class AgentBuilder:
             governor=governor,
         )
 
-        # Register default ReAct gates (StopHandler).
-        if workspace is not None:
-            from ..loop.react_gates import (
-                register_react_gates,
-            )
-
-            register_react_gates(workspace, running_config)
+        # DefaultMode owns default-scoped gate registration (on_turn_start).
 
         # Load session state if SessionLoadHook populated it.
         if ctx.session_state:

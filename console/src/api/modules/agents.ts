@@ -52,4 +52,18 @@ export const agentsApi = {
         body: JSON.stringify({ enabled }),
       },
     ),
+
+  /** AI-generate description / soul / profile via system default model */
+  generatePersona: (body: {
+    field: "description" | "soul" | "profile";
+    name: string;
+    description?: string;
+    soul?: string;
+    profile?: string;
+    language?: string;
+  }) =>
+    request<{ field: string; content: string }>("/agents/generate-persona", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };

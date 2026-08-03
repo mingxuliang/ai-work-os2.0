@@ -1,12 +1,14 @@
 import { useState, useMemo, useEffect } from "react";
 import { Button, Form, Tabs } from "@agentscope-ai/design";
 import { useTranslation } from "react-i18next";
+import { useSearchParams } from "react-router-dom";
 import { useAgentConfig } from "./useAgentConfig.tsx";
 import {
   ReactAgentCard,
   LlmRetryCard,
   LlmRateLimiterCard,
   ToolExecutionLevelCard,
+  AgentLoopCard,
 } from "./components";
 import { PageHeader } from "@/components/PageHeader";
 import {
@@ -17,7 +19,10 @@ import styles from "./index.module.less";
 
 function AgentConfigPage() {
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState("reactAgent");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(
+    () => searchParams.get("tab") || "reactAgent",
+  );
   const {
     form,
     loading,
@@ -61,6 +66,19 @@ function AgentConfigPage() {
               savingTimezone={savingTimezone}
               onTimezoneChange={handleTimezoneChange}
             />
+          </div>
+        ),
+      },
+      {
+        key: "agentLoop",
+        label: (
+          <span className={styles.tabLabel}>
+            {t("agentConfig.agentLoopTitle", "Agent Loop Settings")}
+          </span>
+        ),
+        children: (
+          <div className={styles.tabContent}>
+            <AgentLoopCard />
           </div>
         ),
       },
@@ -166,11 +184,32 @@ function AgentConfigPage() {
   ]);
 
   useEffect(() => {
-    const tabKeys = dynamicTabs.map((t) => t.key);
+    const tabKeys = dynamicTabs.map((tab) => tab.key);
     if (!tabKeys.includes(activeTab)) {
       setActiveTab(tabKeys[0] ?? "reactAgent");
     }
   }, [dynamicTabs, activeTab]);
+
+  useEffect(() => {
+    const tabFromUrl = searchParams.get("tab");
+    if (tabFromUrl && tabFromUrl !== activeTab) {
+      const tabKeys = dynamicTabs.map((tab) => tab.key);
+      if (tabKeys.includes(tabFromUrl)) {
+        setActiveTab(tabFromUrl);
+      }
+    }
+  }, [searchParams, dynamicTabs, activeTab]);
+
+  const handleTabChange = (key: string) => {
+    setActiveTab(key);
+    const next = new URLSearchParams(searchParams);
+    if (key === "reactAgent") {
+      next.delete("tab");
+    } else {
+      next.set("tab", key);
+    }
+    setSearchParams(next, { replace: true });
+  };
 
   if (loading) {
     return (
@@ -204,7 +243,7 @@ function AgentConfigPage() {
           <Tabs
             className={styles.mainTabs}
             activeKey={activeTab}
-            onChange={setActiveTab}
+            onChange={handleTabChange}
             items={dynamicTabs}
             destroyInactiveTabPane={false}
           />

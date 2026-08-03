@@ -417,14 +417,16 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
                 exc_info=True,
             )
 
-        # --- Built-in modes (CodingMode, MissionMode) ---
+        # --- Built-in modes (DefaultMode, CodingMode, MissionMode, GoalMode) ---
         try:
             from ..modes.coding import CodingMode
+            from ..modes.default import DefaultMode
             from ..modes.goal import GoalMode
             from ..modes.mission import MissionMode
 
             # pylint: disable-next=protected-access
             workspace_registry._bootstrap_kwargs["builtin_mode_clses"] = [
+                DefaultMode,
                 CodingMode,
                 MissionMode,
                 GoalMode,
@@ -506,12 +508,15 @@ async def lifespan(  # pylint: disable=too-many-statements,too-many-branches
             logger.debug("Initializing plugin system...")
 
             from ..config.utils import get_plugins_dir
+            from ..constant import BUNDLED_PLUGINS_DIR
             from ..plugins.loader import PluginLoader
             from ..plugins.runtime import RuntimeHelpers
 
             plugin_dirs = [
                 get_plugins_dir(),
             ]
+            if BUNDLED_PLUGINS_DIR.is_dir():
+                plugin_dirs.append(BUNDLED_PLUGINS_DIR)
 
             plugin_loader = PluginLoader(plugin_dirs)
 

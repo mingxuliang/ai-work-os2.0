@@ -6,6 +6,17 @@
 
 > 旧的 `packages/aiwork-enterprise` overlay 已废弃；见 [09-upstream-sync.md](09-upstream-sync.md)。
 
+## 内核版本说明（`2.0.1.post0`）
+
+当前内核版本号为 **`2.0.1.post0`**（见 `src/aiwork/__version__.py`）。  
+这是**部分合入**上游 QwenPaw v2.0.1 的 Agent Mode / Oh-My-Paw 能力，**不是整仓升级到 2.0.1**：
+
+- DefaultMode + 自定义 Loop（catalog / compiler / CRUD API）
+- 控制台 Agent Loop 编辑器（`AgentLoopCard`）与聊天 Mode 选择器
+- Oh-My-Paw 插件 `plugins/bundle/omp_workflows`（`/ralph` `/ultraqa` `/ultrawork` `/autopilot` `/team`）
+
+暂未合入：PawApp Kanban、ReMe 全量增强、桌面端 Tauri、上游全量 bugfix。
+
 ## 快速启动（开发机）
 
 ```powershell

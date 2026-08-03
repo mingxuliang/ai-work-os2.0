@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import {
   Modal,
   Form,
@@ -11,7 +11,7 @@ import {
   Empty,
   Tag,
 } from "antd";
-import { CheckOutlined } from "@ant-design/icons";
+import { CheckOutlined, ThunderboltOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import type { AgentSummary } from "@/api/types/agents";
 import type { ProviderInfo } from "@/api/types/provider";
@@ -19,6 +19,8 @@ import type { PoolSkillSpec } from "@/api/types/skill";
 import { getAgentDisplayName } from "@/utils/agentDisplayName";
 import { skillApi } from "@/api/modules/skill";
 import { providerApi } from "@/api/modules/provider";
+import { agentsApi } from "@/api/modules/agents";
+import { useAppMessage } from "@/hooks/useAppMessage";
 import { providerIcon } from "../../Models/components/providerIcon";
 import { DEFAULT_TEAM_ICON_KEY, TEAM_ICON_OPTIONS, resolveTeamIcon } from "./agentTeamIcons";
 import {
@@ -28,6 +30,8 @@ import {
 } from "./agentCategories";
 import parentStyles from "../index.module.less";
 import modalStyles from "./AgentModal.module.less";
+
+type PersonaGenField = "description" | "soul" | "profile";
 
 interface EligibleProvider {
   id: string;
@@ -143,22 +147,94 @@ export function AgentModal({
   onCancel,
   hideCategory = false,
 }: AgentModalProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const { message } = useAppMessage();
   const [poolSkills, setPoolSkills] = useState<PoolSkillSpec[]>([]);
   const [installedSkills, setInstalledSkills] = useState<string[]>([]);
   const [loadingSkills, setLoadingSkills] = useState(false);
   const [providers, setProviders] = useState<ProviderInfo[]>([]);
   const [loadingProviders, setLoadingProviders] = useState(false);
   const [skillVisibility, setSkillVisibility] = useState<SkillVisibility>("all");
+  const [generatingField, setGeneratingField] = useState<PersonaGenField | null>(
+    null,
+  );
 
   const selectedProviderId = Form.useWatch("active_model_provider", form);
   const selectedModelId = Form.useWatch("active_model_model", form);
   const watchedName = Form.useWatch("name", form);
   const watchedDescription = Form.useWatch("description", form);
+  const watchedSoul = Form.useWatch("soul", form);
+  const watchedProfile = Form.useWatch("profile", form);
   const watchedId = Form.useWatch("id", form);
   const teamIconKeyWatch = Form.useWatch("team_icon", form);
   const teamTagsWatch = Form.useWatch("team_tags", form);
   const teamCategoryWatch = Form.useWatch("team_category", form);
+
+  const handleAiGenerate = useCallback(
+    async (field: PersonaGenField) => {
+      const name =
+        typeof watchedName === "string" ? watchedName.trim() : "";
+      if (!name) {
+        message.warning(t("agent.aiGenerateNeedName"));
+        return;
+      }
+      setGeneratingField(field);
+      try {
+        const res = await agentsApi.generatePersona({
+          field,
+          name,
+          description:
+            typeof watchedDescription === "string" ? watchedDescription : "",
+          soul: typeof watchedSoul === "string" ? watchedSoul : "",
+          profile: typeof watchedProfile === "string" ? watchedProfile : "",
+          language: i18n.language,
+        });
+        form.setFieldsValue({ [field]: res.content });
+        message.success(t("agent.aiGenerateSuccess"));
+      } catch (error: any) {
+        message.error(error?.message || t("agent.aiGenerateFailed"));
+      } finally {
+        setGeneratingField(null);
+      }
+    },
+    [
+      watchedName,
+      watchedDescription,
+      watchedSoul,
+      watchedProfile,
+      form,
+      i18n.language,
+      message,
+      t,
+    ],
+  );
+
+  const aiGenerateLabel = (field: PersonaGenField, label: string) => (
+    <span
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 8,
+        flexWrap: "wrap",
+      }}
+    >
+      <span>{label}</span>
+      <Button
+        type="link"
+        size="small"
+        icon={<ThunderboltOutlined />}
+        loading={generatingField === field}
+        disabled={generatingField !== null && generatingField !== field}
+        onClick={(e) => {
+          e.preventDefault();
+          void handleAiGenerate(field);
+        }}
+        style={{ padding: 0, height: "auto", fontSize: 12 }}
+      >
+        {t("agent.aiGenerate")}
+      </Button>
+    </span>
+  );
 
   const previewTeamIconEntry = resolveTeamIcon(
     typeof teamIconKeyWatch === "string"
@@ -391,7 +467,7 @@ export function AgentModal({
               </Form.Item>
               <Form.Item
                 name="description"
-                label={t("agent.description")}
+                label={aiGenerateLabel("description", t("agent.description"))}
                 rules={[{ max: 500, message: t("agent.descriptionTooLong") }]}
               >
                 <Input.TextArea
@@ -399,6 +475,32 @@ export function AgentModal({
                   rows={3}
                   showCount={{ formatter: ({ count }) => `${count} / 500` }}
                   maxLength={500}
+                />
+              </Form.Item>
+              <Form.Item
+                name="soul"
+                label={aiGenerateLabel("soul", t("agent.soul"))}
+                extra={t("agent.soulHelp")}
+                rules={[{ max: 2000, message: t("agent.personaTooLong") }]}
+              >
+                <Input.TextArea
+                  placeholder={t("agent.soulPlaceholder")}
+                  rows={4}
+                  showCount={{ formatter: ({ count }) => `${count} / 2000` }}
+                  maxLength={2000}
+                />
+              </Form.Item>
+              <Form.Item
+                name="profile"
+                label={aiGenerateLabel("profile", t("agent.profile"))}
+                extra={t("agent.profileHelp")}
+                rules={[{ max: 2000, message: t("agent.personaTooLong") }]}
+              >
+                <Input.TextArea
+                  placeholder={t("agent.profilePlaceholder")}
+                  rows={3}
+                  showCount={{ formatter: ({ count }) => `${count} / 2000` }}
+                  maxLength={2000}
                 />
               </Form.Item>
               <Form.Item

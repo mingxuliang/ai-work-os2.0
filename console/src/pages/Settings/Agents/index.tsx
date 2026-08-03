@@ -32,6 +32,13 @@ import {
   CATEGORY_OPTIONS,
   DEFAULT_CATEGORY_KEY,
 } from "./components/agentCategories";
+import { workspaceApi } from "../../../api/modules/workspace";
+import {
+  buildProfileMarkdown,
+  buildSoulMarkdown,
+  extractProfileBody,
+  extractSoulBody,
+} from "@/utils/agentPersona";
 import styles from "./index.module.less";
 
 export default function AgentsPage() {
@@ -81,6 +88,8 @@ export default function AgentsPage() {
       team_icon: DEFAULT_TEAM_ICON_KEY,
       team_tags: [],
       team_category: DEFAULT_CATEGORY_KEY,
+      soul: "",
+      profile: "",
     });
     setSelectedSkills([]);
     installedSkillsRef.current = [];
@@ -94,6 +103,20 @@ export default function AgentsPage() {
       invalidateSkillCache({ agentId: agent.id });
       const config = await agentsApi.getAgent(agent.id);
       const preset = loadAgentPresentation(agent.id);
+      let soul = "";
+      let profile = "";
+      try {
+        const soulFile = await workspaceApi.loadFile("SOUL.md", agent.id);
+        soul = extractSoulBody(soulFile.content ?? "");
+      } catch {
+        /* optional */
+      }
+      try {
+        const profileFile = await workspaceApi.loadFile("PROFILE.md", agent.id);
+        profile = extractProfileBody(profileFile.content ?? "");
+      } catch {
+        /* optional */
+      }
       setEditingAgent(agent);
       form.setFieldsValue({
         ...config,
@@ -102,6 +125,8 @@ export default function AgentsPage() {
         team_icon: preset.iconKey,
         team_tags: preset.tags,
         team_category: preset.category,
+        soul,
+        profile,
       });
       setModalVisible(true);
     } catch (error) {
@@ -165,8 +190,12 @@ export default function AgentsPage() {
         team_icon,
         team_tags,
         team_category,
+        soul,
+        profile,
         ...rest
       } = values;
+      const soulText = typeof soul === "string" ? soul.trim() : "";
+      const profileText = typeof profile === "string" ? profile.trim() : "";
       let payload = {
         ...rest,
         workspace_dir,
@@ -198,6 +227,22 @@ export default function AgentsPage() {
           });
         }
         await agentsApi.updateAgent(editingAgent.id, payload);
+        const agentName =
+          typeof payload.name === "string" ? payload.name : editingAgent.id;
+        if (soulText) {
+          await workspaceApi.saveFile(
+            "SOUL.md",
+            buildSoulMarkdown(soulText, agentName, i18n.language),
+            editingAgent.id,
+          );
+        }
+        if (profileText) {
+          await workspaceApi.saveFile(
+            "PROFILE.md",
+            buildProfileMarkdown(profileText, agentName, i18n.language),
+            editingAgent.id,
+          );
+        }
         saveAgentPresentation(editingAgent.id, {
           iconKey:
             typeof team_icon === "string" ? team_icon : DEFAULT_TEAM_ICON_KEY,
@@ -211,8 +256,7 @@ export default function AgentsPage() {
         appendAgentEditHistory(editingAgent.id, {
           kind: "profile_updated",
           title: t("agentDetail.historyUpdated"),
-          description:
-            typeof payload.name === "string" ? payload.name : editingAgent.id,
+          description: agentName,
         });
         if (newSkills.length > 0) {
           appendAgentEditHistory(editingAgent.id, {
@@ -234,6 +278,8 @@ export default function AgentsPage() {
           ...payload,
           language: i18n.language,
           skill_names: selectedSkills,
+          ...(soulText ? { soul: soulText } : {}),
+          ...(profileText ? { profile: profileText } : {}),
         };
         const result = await agentsApi.createAgent(body);
         saveAgentPresentation(result.id, {

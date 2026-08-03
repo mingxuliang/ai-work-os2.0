@@ -103,23 +103,36 @@ class MissionMode(AgentMode):
                     priority=0,
                     name="mission-stop-handler",
                     scope="mission",
+                    is_active=self._is_gate_active,
                 ),
             )
 
-    def on_conversation_reset(
+    async def on_conversation_reset(
         self,
-        workspace: object,  # noqa: ARG002
+        ctx: HookContext,  # noqa: ARG002
     ) -> None:
         """Clear active mission gate state."""
         if self._gate is not None:
-            self._gate.deactivate()
+            reset_session = getattr(self._gate, "reset_session", None)
+            if callable(reset_session):
+                reset_session()
+            else:
+                self._gate.deactivate()
+        ctx.mode_state.pop(self.name, None)
 
     def is_active(self, ctx: HookContext) -> bool:
-        return bool(
+        return self._is_gate_active() or bool(
             (ctx.session_state or {}).get(
                 "mission_active",
             ),
         )
+
+    def _is_gate_active(self) -> bool:
+        """Check if MissionGate has active state."""
+        if self._gate is None:
+            return False
+        # pylint: disable=protected-access
+        return self._gate._state() is not None
 
     # ── command handler ──
 

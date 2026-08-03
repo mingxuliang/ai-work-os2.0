@@ -51,6 +51,10 @@ export interface CreateAgentRequest {
   language?: string;
   skill_names?: string[];
   active_model?: ModelSlotConfig | null;
+  /** Plain-text persona → workspace SOUL.md */
+  soul?: string;
+  /** Plain-text role/identity → workspace PROFILE.md */
+  profile?: string;
 }
 
 export interface AgentProfileRef {

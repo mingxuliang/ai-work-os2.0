@@ -492,11 +492,29 @@ export const skillApi = {
       { method: "DELETE" },
     ),
 
+  generateSkillWithAI: (payload: {
+    brief: string;
+    name?: string;
+    language?: string;
+  }) =>
+    request<{ content: string; name: string; description: string }>(
+      "/skills/ai/generate",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          brief: payload.brief,
+          name: payload.name,
+          language: payload.language || "zh",
+        }),
+      },
+    ),
+
   streamOptimizeSkill: async function (
     content: string,
     onChunk: (text: string) => void,
     signal: AbortSignal,
     language: string = "en",
+    onReplace?: (text: string) => void,
   ): Promise<void> {
     const apiUrl = getStreamApiUrl();
 
@@ -504,6 +522,7 @@ export const skillApi = {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
+        ...buildAuthHeaders(),
       },
       body: JSON.stringify({ content, language }),
       signal,
@@ -535,15 +554,21 @@ export const skillApi = {
             const data = line.slice(6);
             try {
               const parsed = JSON.parse(data);
-              if (parsed.text) {
+              if (typeof parsed.replace === "string") {
+                onReplace?.(parsed.replace);
+              } else if (parsed.text) {
                 onChunk(parsed.text);
               } else if (parsed.error) {
                 throw new Error(parsed.error);
               } else if (parsed.done) {
                 return;
               }
-            } catch {
-              // Ignore malformed chunks.
+            } catch (err) {
+              if (err instanceof SyntaxError) {
+                // Ignore malformed SSE chunks.
+              } else {
+                throw err;
+              }
             }
           }
         }

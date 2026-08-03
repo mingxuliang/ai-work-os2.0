@@ -84,11 +84,14 @@ export function SkillDrawer({
   const { t, i18n } = useTranslation();
   const [showMarkdown, setShowMarkdown] = useState(true);
   const [contentValue, setContentValue] = useState("");
+  const [aiBrief, setAiBrief] = useState("");
   const [optimizing, setOptimizing] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
   const [configText, setConfigText] = useState("{}");
   const [configError, setConfigError] = useState("");
   const { message } = useAppMessage();
+  const aiBusy = optimizing || generating;
 
   const validateFrontmatter = useCallback(
     (_: unknown, value: string) => {
@@ -147,6 +150,7 @@ export function SkillDrawer({
       };
     } else {
       setContentValue("");
+      setAiBrief("");
       setConfigText("{}");
       setConfigError("");
       form.resetFields();
@@ -185,6 +189,49 @@ export function SkillDrawer({
     }
   };
 
+  const applyGeneratedContent = (content: string, skillName?: string) => {
+    setContentValue(content);
+    form.setFieldsValue({ content });
+    const fm = parseFrontmatter(content);
+    const nextName = (skillName || fm?.name || "").trim();
+    if (nextName && !form.getFieldValue("name")) {
+      form.setFieldsValue({ name: nextName });
+    }
+    form.validateFields(["content"]).catch(() => {});
+  };
+
+  const handleGenerate = async () => {
+    const brief =
+      aiBrief.trim() ||
+      String(form.getFieldValue("name") || "").trim() ||
+      contentValue.trim();
+    if (!brief) {
+      message.warning(t("skills.generateBriefRequired"));
+      return;
+    }
+
+    setGenerating(true);
+    try {
+      const preferredName = String(form.getFieldValue("name") || "").trim();
+      const res = await api.generateSkillWithAI({
+        brief,
+        name: preferredName || undefined,
+        language: i18n.language,
+      });
+      applyGeneratedContent(res.content, res.name);
+      if (res.name) {
+        form.setFieldsValue({ name: res.name });
+      }
+      message.success(t("skills.generateSuccess"));
+    } catch (error: unknown) {
+      message.error(
+        error instanceof Error ? error.message : t("skills.generateFailed"),
+      );
+    } finally {
+      setGenerating(false);
+    }
+  };
+
   const handleOptimize = async () => {
     if (!contentValue.trim()) {
       message.warning(t("skills.noContentToOptimize"));
@@ -207,7 +254,10 @@ export function SkillDrawer({
           });
         },
         abortControllerRef.current.signal,
-        i18n.language, // Pass current language to API
+        i18n.language,
+        (replaced) => {
+          applyGeneratedContent(replaced);
+        },
       );
       message.success(t("skills.optimizeSuccess"));
     } catch (error: unknown) {
@@ -240,13 +290,22 @@ export function SkillDrawer({
         width: "100%",
       }}
     >
-      <div>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <Button
+          type="default"
+          icon={<ThunderboltOutlined />}
+          onClick={handleGenerate}
+          loading={generating}
+          disabled={aiBusy && !generating}
+        >
+          {t("skills.generateWithAI")}
+        </Button>
         {!optimizing ? (
           <Button
             type="default"
             icon={<ThunderboltOutlined />}
             onClick={handleOptimize}
-            disabled={!contentValue.trim()}
+            disabled={!contentValue.trim() || aiBusy}
           >
             {t("skills.optimizeWithAI")}
           </Button>
@@ -262,8 +321,14 @@ export function SkillDrawer({
         )}
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <Button onClick={onClose}>{t("common.cancel")}</Button>
-        <Button type="primary" onClick={() => form.submit()}>
+        <Button onClick={onClose} disabled={aiBusy}>
+          {t("common.cancel")}
+        </Button>
+        <Button
+          type="primary"
+          onClick={() => form.submit()}
+          disabled={aiBusy}
+        >
           {t("skills.create")}
         </Button>
       </div>
@@ -300,6 +365,21 @@ export function SkillDrawer({
         ) : (
           <Form.Item name="name" label={t("skills.skillName")}>
             <Input />
+          </Form.Item>
+        )}
+
+        {!editingSkill && (
+          <Form.Item
+            label={t("skills.generateBriefLabel")}
+            tooltip={t("skills.generateBriefHint")}
+          >
+            <Input.TextArea
+              rows={3}
+              value={aiBrief}
+              onChange={(e) => setAiBrief(e.target.value)}
+              placeholder={t("skills.generateBriefPlaceholder")}
+              disabled={aiBusy}
+            />
           </Form.Item>
         )}
 

@@ -11,6 +11,34 @@ import {
 } from "../../../constants/backendMappings";
 import type { ToolExecutionLevel } from "./components/ToolExecutionLevelCard";
 
+function deepMergeConfig<T>(
+  base: T | undefined | null,
+  override: T | undefined | null,
+): T | undefined {
+  if (!base) return override ?? undefined;
+  if (!override) return base;
+  const baseRecord = base as Record<string, unknown>;
+  const overrideRecord = override as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...baseRecord };
+  for (const key of Object.keys(overrideRecord)) {
+    const overrideVal = overrideRecord[key];
+    const baseVal = baseRecord[key];
+    if (
+      overrideVal != null &&
+      typeof overrideVal === "object" &&
+      !Array.isArray(overrideVal) &&
+      baseVal != null &&
+      typeof baseVal === "object" &&
+      !Array.isArray(baseVal)
+    ) {
+      result[key] = deepMergeConfig(baseVal, overrideVal);
+    } else {
+      result[key] = overrideVal;
+    }
+  }
+  return result as T;
+}
+
 export function useAgentConfig() {
   const { t } = useTranslation();
   const { message } = useAppMessage();
@@ -26,6 +54,7 @@ export function useAgentConfig() {
   const [approvalLevel, setApprovalLevel] =
     useState<ToolExecutionLevel>("AUTO");
   const initialApprovalLevelRef = useRef<ToolExecutionLevel>("AUTO");
+  const originalConfigRef = useRef<AgentsRunningConfig | null>(null);
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
@@ -53,6 +82,14 @@ export function useAgentConfig() {
         max_iters: config.max_iters,
         auto_continue_on_text_only: config.auto_continue_on_text_only ?? false,
         shell_command_timeout: config.shell_command_timeout ?? 60.0,
+        loop: {
+          ...config.loop,
+          iteration: {
+            ...config.loop?.iteration,
+            max_iterations:
+              config.loop?.iteration?.max_iterations ?? config.max_iters ?? 100,
+          },
+        },
         llm_retry_enabled: config.llm_retry_enabled,
         llm_max_retries: config.llm_max_retries,
         llm_backoff_base: config.llm_backoff_base,
@@ -73,6 +110,7 @@ export function useAgentConfig() {
           timeout_seconds: 30.0,
         },
       });
+      originalConfigRef.current = config;
       setLanguage(langResp.language);
       setTimezone(tzResp.timezone || "UTC");
     } catch (err) {
@@ -90,13 +128,38 @@ export function useAgentConfig() {
 
   const handleSave = useCallback(async () => {
     try {
-      const values = await form.validateFields();
+      await form.validateFields();
       setSaving(true);
+
+      // Include programmatic / collapsed custom-loop fields.
+      const values = form.getFieldsValue(true);
+      const original = originalConfigRef.current;
+      const formValues = values as AgentsRunningConfig;
+
       const configToSave: AgentsRunningConfig = {
-        ...(values as AgentsRunningConfig),
+        ...(original ?? ({} as AgentsRunningConfig)),
+        ...formValues,
+        reme_light_memory_config: deepMergeConfig(
+          original?.reme_light_memory_config,
+          formValues.reme_light_memory_config,
+        ) as AgentsRunningConfig["reme_light_memory_config"],
+        light_context_config: deepMergeConfig(
+          original?.light_context_config,
+          formValues.light_context_config,
+        ) as AgentsRunningConfig["light_context_config"],
+        auto_title_config: deepMergeConfig(
+          original?.auto_title_config,
+          formValues.auto_title_config,
+        ) as AgentsRunningConfig["auto_title_config"],
+        loop: deepMergeConfig(
+          original?.loop,
+          formValues.loop,
+        ) as AgentsRunningConfig["loop"],
         approval_level: approvalLevel,
       };
+
       await api.updateAgentRunningConfig(configToSave);
+      originalConfigRef.current = configToSave;
       initialApprovalLevelRef.current = approvalLevel;
       message.success(t("agentConfig.saveSuccess"));
     } catch (err) {
@@ -107,7 +170,7 @@ export function useAgentConfig() {
     } finally {
       setSaving(false);
     }
-  }, [form, t, selectedAgent, approvalLevel]);
+  }, [form, t, selectedAgent, approvalLevel, message]);
 
   const handleLanguageChange = useCallback(
     (value: string): void => {
@@ -147,7 +210,7 @@ export function useAgentConfig() {
         },
       });
     },
-    [language, t],
+    [language, t, message],
   );
 
   const handleTimezoneChange = useCallback(
@@ -168,7 +231,7 @@ export function useAgentConfig() {
         setSavingTimezone(false);
       }
     },
-    [timezone, t],
+    [timezone, t, message],
   );
 
   return {

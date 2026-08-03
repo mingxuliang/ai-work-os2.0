@@ -435,10 +435,12 @@ class QwenPawACPAgent(Agent):
 
         try:
             from ...modes.coding import CodingMode
+            from ...modes.default import DefaultMode
             from ...modes.mission import MissionMode
             from ...modes.goal import GoalMode
 
             kwargs["builtin_mode_clses"] = [
+                DefaultMode,
                 CodingMode,
                 MissionMode,
                 GoalMode,

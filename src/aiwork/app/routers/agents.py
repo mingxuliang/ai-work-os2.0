@@ -7,9 +7,11 @@ Provides RESTful API for managing multiple agent instances.
 import json
 import logging
 from pathlib import Path
+from typing import Literal
+
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi import Path as PathParam
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 from aiwork.exceptions import (
     AppBaseException,
@@ -183,6 +185,9 @@ class CreateAgentRequest(BaseModel):
     The ``id`` field is optional.  When provided the server uses it as
     the agent identifier (after sanitization); when omitted a random
     short UUID is generated automatically.
+
+    Optional ``soul`` / ``profile`` override the default persona markdown
+    templates written into the new workspace (SOUL.md / PROFILE.md).
     """
 
     id: str | None = None
@@ -192,6 +197,24 @@ class CreateAgentRequest(BaseModel):
     language: str | None = None
     skill_names: list[str] | None = None
     active_model: ModelSlotConfig | None = None
+    # Persona overrides (plain text → SOUL.md / PROFILE.md)
+    soul: str | None = None
+    profile: str | None = None
+
+    @field_validator("soul", "profile", mode="before")
+    @classmethod
+    def normalize_persona_text(cls, value: str | None) -> str | None:
+        """Strip whitespace; empty string becomes None; cap length."""
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            return None
+        text = value.strip()
+        if not text:
+            return None
+        if len(text) > 2000:
+            raise ValueError("persona text must be at most 2000 characters")
+        return text
 
     @field_validator("id", mode="before")
     @classmethod
@@ -529,6 +552,219 @@ def _generate_unique_id(existing_ids: set[str]) -> str:
     )
 
 
+class GeneratePersonaRequest(BaseModel):
+    """Generate agent description / soul / profile via the active default model."""
+
+    field: Literal["description", "soul", "profile"]
+    name: str = Field(..., min_length=1, max_length=120)
+    description: str = ""
+    soul: str = ""
+    profile: str = ""
+    language: str | None = None
+
+
+class GeneratePersonaResponse(BaseModel):
+    field: str
+    content: str
+
+
+def _persona_system_prompt(language: str) -> str:
+    if language.startswith("zh"):
+        return (
+            "你是企业数字员工人设专家。根据用户提供的智能体信息，生成简洁、可直接使用的"
+            "中文内容。只输出正文，不要标题、不要 markdown 代码块、不要解释。"
+        )
+    return (
+        "You are an expert at writing enterprise digital-employee personas. "
+        "Based on the agent info, produce concise ready-to-use text. "
+        "Output body text only — no titles, no markdown fences, no explanations."
+    )
+
+
+def _persona_user_prompt(
+    field: str,
+    *,
+    name: str,
+    description: str,
+    soul: str,
+    profile: str,
+    language: str,
+) -> str:
+    is_zh = language.startswith("zh")
+    context_lines = [
+        f"Name: {name}" if not is_zh else f"名称：{name}",
+    ]
+    if description.strip():
+        context_lines.append(
+            f"Description: {description.strip()}"
+            if not is_zh
+            else f"描述：{description.strip()}",
+        )
+    if soul.strip():
+        context_lines.append(
+            f"Existing persona: {soul.strip()}"
+            if not is_zh
+            else f"已有人设：{soul.strip()}",
+        )
+    if profile.strip():
+        context_lines.append(
+            f"Existing role: {profile.strip()}"
+            if not is_zh
+            else f"已有职责：{profile.strip()}",
+        )
+    context = "\n".join(context_lines)
+
+    if field == "description":
+        if is_zh:
+            return (
+                f"{context}\n\n"
+                "请生成一段智能体「描述」（40～120 字）：说明用途、服务对象与核心能力，"
+                "语气专业简洁，不要第一人称长篇独白。"
+            )
+        return (
+            f"{context}\n\n"
+            "Write an agent description (40–120 words): purpose, audience, "
+            "and core capability. Professional and concise."
+        )
+    if field == "soul":
+        if is_zh:
+            return (
+                f"{context}\n\n"
+                "请生成「人设 / 性格」正文（120～400 字），写入 SOUL.md 用：\n"
+                "- 角色气质与价值观\n"
+                "- 回答风格（简洁/严谨/先结论等）\n"
+                "- 行为原则与边界（不编造、先读再答等）\n"
+                "用第二人称「你是…」书写。"
+            )
+        return (
+            f"{context}\n\n"
+            "Write persona / personality text (120–400 words) for SOUL.md:\n"
+            "- tone and values\n"
+            "- reply style\n"
+            "- behavioral principles and boundaries\n"
+            "Write in second person (“You are…”)."
+        )
+    # profile
+    if is_zh:
+        return (
+            f"{context}\n\n"
+            "请生成「岗位 / 职责」正文（80～300 字），写入 PROFILE.md 用：\n"
+            "- 角色定位与业务范围\n"
+            "- 主要任务与交付物\n"
+            "- 不负责的事项（可选）\n"
+            "用简洁条目或短段落，不要重复人设语气描写。"
+        )
+    return (
+        f"{context}\n\n"
+        "Write role / responsibilities text (80–300 words) for PROFILE.md:\n"
+        "- role and scope\n"
+        "- main tasks and deliverables\n"
+        "- out-of-scope items (optional)\n"
+        "Keep it concise; do not repeat personality prose."
+    )
+
+
+async def _generate_with_default_model(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    """Call the global default chat model and return plain text."""
+    try:
+        from agentscope.message import Msg, TextBlock
+
+        from ...agents.model_factory import create_model_and_formatter
+        from ...utils.model_response import consume_model_response
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model runtime unavailable: {exc}",
+        ) from exc
+
+    try:
+        model, _formatter = create_model_and_formatter()
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No default model configured. "
+                f"Please set an active model first. ({exc})"
+            ),
+        ) from exc
+
+    messages = [
+        Msg(
+            name="system",
+            role="system",
+            content=[TextBlock(type="text", text=system_prompt)],
+        ),
+        Msg(
+            name="user",
+            role="user",
+            content=[TextBlock(type="text", text=user_prompt)],
+        ),
+    ]
+    try:
+        text = await consume_model_response(
+            model,
+            messages,
+            disable_thinking=True,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("generate-persona LLM call failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"LLM generation failed: {exc}",
+        ) from exc
+
+    content = (text or "").strip()
+    if content.startswith("```"):
+        lines = content.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        content = "\n".join(lines).strip()
+    if not content:
+        raise HTTPException(status_code=502, detail="LLM returned empty content")
+    return content
+
+
+@router.post(
+    "/generate-persona",
+    response_model=GeneratePersonaResponse,
+    summary="AI-generate agent description or persona fields",
+    description=(
+        "Generate description / soul / profile text using the system "
+        "default (active) model."
+    ),
+)
+async def generate_persona(
+    request: GeneratePersonaRequest = Body(...),
+) -> GeneratePersonaResponse:
+    """Generate one agent form field via the active default LLM."""
+    language = normalize_agent_language(request.language or "zh")
+    name = request.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    max_len = 500 if request.field == "description" else 2000
+    content = await _generate_with_default_model(
+        system_prompt=_persona_system_prompt(language),
+        user_prompt=_persona_user_prompt(
+            request.field,
+            name=name,
+            description=request.description or "",
+            soul=request.soul or "",
+            profile=request.profile or "",
+            language=language,
+        ),
+    )
+    if len(content) > max_len:
+        content = content[:max_len].rstrip()
+    return GeneratePersonaResponse(field=request.field, content=content)
+
+
 @router.post(
     "",
     response_model=AgentProfileRef,
@@ -627,6 +863,13 @@ async def create_agent(
         skill_names=(
             request.skill_names if request.skill_names is not None else []
         ),
+        language=language,
+    )
+    _apply_persona_overrides(
+        workspace_dir,
+        agent_name=request.name,
+        soul=request.soul,
+        profile=request.profile,
         language=language,
     )
 
@@ -884,6 +1127,61 @@ def _install_initial_skills(
                 workspace_dir,
                 e,
             )
+
+
+def _apply_persona_overrides(
+    workspace_dir: Path,
+    *,
+    agent_name: str,
+    soul: str | None,
+    profile: str | None,
+    language: str,
+) -> None:
+    """Overwrite SOUL.md / PROFILE.md when create-time persona text is provided."""
+    if not soul and not profile:
+        return
+
+    name = (agent_name or "Agent").strip() or "Agent"
+    lang = (language or "zh").lower()
+    is_zh = lang.startswith("zh")
+
+    if soul:
+        if is_zh:
+            content = (
+                f"---\n"
+                f'summary: "{name} — 气质与原则"\n'
+                f"---\n\n"
+                f"## 核心\n\n"
+                f"{soul}\n"
+            )
+        else:
+            content = (
+                f"---\n"
+                f'summary: "{name} — persona & principles"\n'
+                f"---\n\n"
+                f"## Core\n\n"
+                f"{soul}\n"
+            )
+        (workspace_dir / "SOUL.md").write_text(content, encoding="utf-8")
+
+    if profile:
+        if is_zh:
+            content = (
+                f"---\n"
+                f'summary: "{name} — 身份与职责"\n'
+                f"---\n\n"
+                f"## 身份与职责\n\n"
+                f"{profile}\n"
+            )
+        else:
+            content = (
+                f"---\n"
+                f'summary: "{name} — identity & role"\n'
+                f"---\n\n"
+                f"## Identity\n\n"
+                f"{profile}\n"
+            )
+        (workspace_dir / "PROFILE.md").write_text(content, encoding="utf-8")
 
 
 def _initialize_agent_workspace(

@@ -23,6 +23,11 @@ _LEVEL_MAP = {
     "debug": logging.DEBUG,
 }
 
+
+def sanitize_log_value(value: object) -> str:
+    """Escape line breaks in untrusted values before structured logging."""
+    return str(value).replace("\r", "\\r").replace("\n", "\\n")
+
 # Top-level name for this package; only loggers under this name are shown.
 LOG_NAMESPACE = PROJECT_NAME.lower()
 

@@ -22,11 +22,8 @@ from ..base import AgentMode
 from ...app.agent_context import (
     get_current_session_id,
 )
-from ...loop.gates import GoalStatusRubric
-from ...loop.handler_registry import (
-    get_or_create_stop_handler,
-)
-from ...runtime.hooks import HookBase
+from ...loop.gates import GoalStatusRubric, StopHandler, StopHandlerRegistration
+from ...runtime.hooks import HookBase, HookContext
 from ...runtime.slash_command_registry import (
     CommandSpec,
 )
@@ -89,6 +86,7 @@ class GoalMode(AgentMode):
     def __init__(self) -> None:
         self._sessions: dict[str, GoalSession] = {}
         self._default_max_tokens = DEFAULT_MAX_TOKENS
+        self._handler: StopHandler | None = None
 
     @property
     def sessions(self) -> dict[str, GoalSession]:
@@ -141,12 +139,13 @@ class GoalMode(AgentMode):
         if key is not None:
             self._sessions.pop(key, None)
 
-    def on_conversation_reset(
+    async def on_conversation_reset(
         self,
-        workspace: object,  # noqa: ARG002
+        ctx: HookContext,  # noqa: ARG002
     ) -> None:
         """Clear all goal sessions on /new or /clear."""
         self._sessions.clear()
+        ctx.mode_state.pop(self.name, None)
 
     # ---- AgentMode interface ----
 
@@ -215,12 +214,26 @@ class GoalMode(AgentMode):
         ]
 
     def setup(self, workspace: object) -> None:
-        """Register gates into universal handler."""
+        """Register gates into a goal-scoped stop handler."""
         super().setup(workspace)
 
-        handler = get_or_create_stop_handler(
-            workspace,
-        )
+        handler = StopHandler()
+        self._handler = handler
+        plugins = getattr(workspace, "plugins", None)
+        if plugins is not None:
+            if not hasattr(plugins, "stop_handlers"):
+                plugins.stop_handlers = []
+            plugins.stop_handlers.append(
+                StopHandlerRegistration(
+                    plugin_id="__goal_mode__",
+                    handler=handler,
+                    priority=0,
+                    name="goal-stop-handler",
+                    scope="goal",
+                    is_active=lambda: self.active_session() is not None,
+                ),
+            )
+
         rubric = GoalStatusRubric(
             get_session_fn=self.session_by_ctx_var,
         )
