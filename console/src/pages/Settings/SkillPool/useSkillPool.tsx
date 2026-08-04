@@ -119,14 +119,30 @@ export function useSkillPool() {
     filteredSkills,
   } = useSkillFilter(skills);
 
+  /** Session pin: keep freshly installed/created skills at the top. */
+  const [pinnedNames, setPinnedNames] = useState<string[]>([]);
+  const [highlightName, setHighlightName] = useState<string | null>(null);
+  const highlightTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const builtinLanguage: BuiltinSkillLanguage = i18n.language?.startsWith("zh")
     ? "zh"
     : "en";
 
-  const sortedSkills = useMemo(
-    () => filteredSkills.slice().sort((a, b) => a.name.localeCompare(b.name)),
-    [filteredSkills],
-  );
+  const sortedSkills = useMemo(() => {
+    const pinRank = (name: string) => {
+      const idx = pinnedNames.indexOf(name);
+      return idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+    };
+    return filteredSkills.slice().sort((a, b) => {
+      const pa = pinRank(a.name);
+      const pb = pinRank(b.name);
+      if (pa !== pb) return pa - pb;
+      const ta = Date.parse(a.last_updated || "") || 0;
+      const tb = Date.parse(b.last_updated || "") || 0;
+      if (tb !== ta) return tb - ta;
+      return a.name.localeCompare(b.name);
+    });
+  }, [filteredSkills, pinnedNames]);
   const hasUnseenBuiltinNotice = useMemo(
     () =>
       Boolean(
@@ -246,9 +262,55 @@ export function useSkillPool() {
     }
   }, [message]);
 
+  const revealSkill = useCallback(
+    async (
+      names: string | string[],
+      options?: { refresh?: boolean; toast?: boolean },
+    ) => {
+      const list = (Array.isArray(names) ? names : [names])
+        .map((n) => String(n || "").trim())
+        .filter(Boolean);
+      if (!list.length) return;
+
+      setSearchQuery("");
+      setSearchTags([]);
+      setPinnedNames(list);
+
+      if (options?.refresh !== false) {
+        invalidateSkillCache({ pool: true });
+        await loadData(true);
+      }
+
+      const primary = list[0];
+      setHighlightName(primary);
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+      }
+      highlightTimerRef.current = setTimeout(() => {
+        setHighlightName(null);
+        highlightTimerRef.current = null;
+      }, 8000);
+
+      if (options?.toast !== false) {
+        message.success(
+          t("skillPool.revealedSkill", { name: list.join(", ") }),
+        );
+      }
+    },
+    [loadData, message, setSearchQuery, setSearchTags, t],
+  );
+
   useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  useEffect(() => {
+    return () => {
+      if (highlightTimerRef.current) {
+        clearTimeout(highlightTimerRef.current);
+      }
+    };
+  }, []);
 
   const closeModal = () => {
     setMode(null);
@@ -575,8 +637,10 @@ export function useSkillPool() {
         );
       }
       closeImportBuiltin();
-      invalidateSkillCache({ pool: true });
-      await loadData(true);
+      await revealSkill([...imported, ...updated], {
+        refresh: true,
+        toast: false,
+      });
     } catch (error) {
       const detail = parseErrorDetail(error);
       const conflicts = Array.isArray(detail?.conflicts)
@@ -724,8 +788,10 @@ export function useSkillPool() {
           : t("common.create"),
       );
       closeDrawer();
-      invalidateSkillCache({ pool: true });
-      await loadData(true);
+      await revealSkill(result.name || skillName, {
+        refresh: true,
+        toast: false,
+      });
       await checkScanWarnings(
         result.name || skillName,
         api.getBlockedHistory,
@@ -836,9 +902,8 @@ export function useSkillPool() {
         } else {
           message.info(t("skillPool.noNewImports"));
         }
-        invalidateSkillCache({ pool: true });
-        await loadData(true);
         if (result.count > 0 && Array.isArray(result.imported)) {
+          await revealSkill(result.imported, { refresh: true, toast: false });
           for (const name of result.imported) {
             await checkScanWarnings(
               name,
@@ -847,6 +912,9 @@ export function useSkillPool() {
               t,
             );
           }
+        } else {
+          invalidateSkillCache({ pool: true });
+          await loadData(true);
         }
         break;
       } catch (error) {
@@ -887,8 +955,7 @@ export function useSkillPool() {
       });
       message.success(`${t("common.create")}: ${result.name}`);
       closeImportModal();
-      invalidateSkillCache({ pool: true });
-      await loadData(true);
+      await revealSkill(result.name, { refresh: true, toast: false });
       await checkScanWarnings(
         result.name,
         api.getBlockedHistory,
@@ -1003,12 +1070,14 @@ export function useSkillPool() {
     drawerContent,
     showMarkdown,
     conflictRenameModal,
+    highlightName,
     setImportModalOpen,
     setConfigText,
     setShowMarkdown,
     setFilterOpen,
     setViewMode,
     handleRefresh,
+    revealSkill,
     closeModal,
     openCreate,
     openBroadcast,

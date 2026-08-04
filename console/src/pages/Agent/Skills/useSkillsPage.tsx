@@ -15,6 +15,7 @@ import {
   checkScanWarnings as checkScanWarningsShared,
   showScanErrorModal,
 } from "../../../utils/scanError";
+import { isSkillBuiltin } from "@/utils/skill";
 import { useSkills } from "./useSkills";
 import { useSkillFilter } from "./useSkillFilter";
 
@@ -74,6 +75,7 @@ export function useSkillsPage() {
   // ── Local state ─────────────────────────────────────────────────────────
 
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [createModalOpen, setCreateModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [editingSkill, setEditingSkill] = useState<SkillSpec | null>(null);
   const [form] = Form.useForm<SkillDrawerFormValues>();
@@ -210,9 +212,19 @@ export function useSkillsPage() {
 
   const handleCreate = () => {
     setEditingSkill(null);
-    form.resetFields();
-    form.setFieldsValue({ enabled: false, channels: ["all"], tags: [] });
-    setDrawerOpen(true);
+    setCreateModalOpen(true);
+  };
+
+  const handleCreateModalClose = () => {
+    setCreateModalOpen(false);
+    setEditingSkill(null);
+  };
+
+  const handleCreated = async () => {
+    setCreateModalOpen(false);
+    setEditingSkill(null);
+    invalidateSkillCache({ agentId: selectedAgent });
+    await refreshSkills();
   };
 
   const closeImportModal = () => {
@@ -247,15 +259,12 @@ export function useSkillsPage() {
   };
 
   const handleEdit = (skill: SkillSpec) => {
+    if (isSkillBuiltin(skill.source)) {
+      message.warning(t("skills.builtinNotEditable"));
+      return;
+    }
     setEditingSkill(skill);
-    form.setFieldsValue({
-      name: skill.name,
-      description: skill.description,
-      content: skill.content,
-      enabled: skill.enabled,
-      channels: skill.channels,
-    });
-    setDrawerOpen(true);
+    setCreateModalOpen(true);
   };
 
   const handleToggleEnabled = async (skill: SkillSpec, e: React.MouseEvent) => {
@@ -690,6 +699,7 @@ export function useSkillsPage() {
     uploading,
     importing,
     drawerOpen,
+    createModalOpen,
     importModalOpen,
     setImportModalOpen,
     editingSkill,
@@ -708,6 +718,8 @@ export function useSkillsPage() {
     searchTags,
     setSearchTags,
     handleCreate,
+    handleCreateModalClose,
+    handleCreated,
     handleEdit,
     handleToggleEnabled,
     handleDelete,

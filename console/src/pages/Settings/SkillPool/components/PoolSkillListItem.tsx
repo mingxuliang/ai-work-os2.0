@@ -16,6 +16,7 @@ dayjs.extend(relativeTime);
 interface PoolSkillListItemProps {
   skill: PoolSkillSpec;
   isSelected: boolean;
+  isHighlighted?: boolean;
   batchModeEnabled: boolean;
   onToggleSelect: (name: string) => void;
   onEdit: (skill: PoolSkillSpec) => void;
@@ -26,6 +27,7 @@ interface PoolSkillListItemProps {
 export function PoolSkillListItem({
   skill,
   isSelected,
+  isHighlighted = false,
   batchModeEnabled,
   onToggleSelect,
   onEdit,
@@ -36,9 +38,10 @@ export function PoolSkillListItem({
 
   return (
     <div
+      data-skill-name={skill.name}
       className={`${styles.skillListItem} ${
         isSelected ? styles.selectedListItem : ""
-      }`}
+      } ${isHighlighted ? styles.poolSkillHighlightList : ""}`}
       onClick={() => {
         if (batchModeEnabled) {
           onToggleSelect(skill.name);
@@ -46,6 +49,17 @@ export function PoolSkillListItem({
           onEdit(skill);
         }
       }}
+      style={{
+        cursor:
+          isSkillBuiltin(skill.source) && !batchModeEnabled
+            ? "default"
+            : "pointer",
+      }}
+      title={
+        isSkillBuiltin(skill.source) && !batchModeEnabled
+          ? t("skills.builtinNotEditable")
+          : undefined
+      }
     >
       {batchModeEnabled && (
         <Checkbox

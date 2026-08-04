@@ -337,7 +337,7 @@ function SortableAgentCard({
               </Popconfirm>
             )}
 
-            {isMyTeam && !isOwnMyTeamAgent && (
+            {isMyTeam && !isOwnMyTeamAgent && !defaultAgent && (
               <Popconfirm
                 title={t("myTeam.removeConfirm")}
                 description={t("myTeam.removeConfirmDesc")}

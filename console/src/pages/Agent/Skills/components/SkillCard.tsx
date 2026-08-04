@@ -192,7 +192,10 @@ export const SkillCard = React.memo(function SkillCard({
       }}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
-      style={{ cursor: "pointer" }}
+      style={{ cursor: isBuiltin && !batchMode ? "default" : "pointer" }}
+      title={
+        isBuiltin && !batchMode ? t("skills.builtinNotEditable") : undefined
+      }
     >
       <div className="cbc-glow-layer" aria-hidden />
       {skill.enabled ? (

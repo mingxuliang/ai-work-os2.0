@@ -20,6 +20,7 @@ interface PoolSkillCardProps {
   /** Rotating accent stripe — 与工作区技能卡片一致 */
   cardIndex?: number;
   isSelected: boolean;
+  isHighlighted?: boolean;
   batchModeEnabled: boolean;
   onToggleSelect: (name: string) => void;
   onEdit: (skill: PoolSkillSpec) => void;
@@ -31,6 +32,7 @@ export function PoolSkillCard({
   skill,
   cardIndex = 0,
   isSelected,
+  isHighlighted = false,
   batchModeEnabled,
   onToggleSelect,
   onEdit,
@@ -44,6 +46,7 @@ export function PoolSkillCard({
   const showSyncedGlow = skill.sync_status === "synced";
   const themeCls = cbcCardStripeClass(cardIndex);
   const selectedCls = isSelected ? "cbc-card--selected" : "";
+  const highlightCls = isHighlighted ? styles.poolSkillHighlight : "";
 
   const statusDotClass =
     syncTone === "synced"
@@ -71,7 +74,8 @@ export function PoolSkillCard({
     <div
       role="button"
       tabIndex={0}
-      className={`cbc-card ${themeCls} ${selectedCls}`}
+      data-skill-name={skill.name}
+      className={`cbc-card ${themeCls} ${selectedCls} ${highlightCls}`}
       onClick={handleCardClick}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
@@ -85,7 +89,14 @@ export function PoolSkillCard({
       }}
       onMouseEnter={() => setIsHover(true)}
       onMouseLeave={() => setIsHover(false)}
-      style={{ cursor: "pointer" }}
+      style={{
+        cursor: isBuiltin && !batchModeEnabled ? "default" : "pointer",
+      }}
+      title={
+        isBuiltin && !batchModeEnabled
+          ? t("skills.builtinNotEditable")
+          : undefined
+      }
     >
       <div className="cbc-glow-layer" aria-hidden />
       {showSyncedGlow ? (

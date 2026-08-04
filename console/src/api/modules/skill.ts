@@ -496,18 +496,213 @@ export const skillApi = {
     brief: string;
     name?: string;
     language?: string;
+    sop_text?: string;
+    available_skills?: Array<{ name: string; description?: string }>;
+    available_tools?: Array<{
+      name: string;
+      description?: string;
+      enabled?: boolean;
+    }>;
   }) =>
-    request<{ content: string; name: string; description: string }>(
-      "/skills/ai/generate",
-      {
-        method: "POST",
-        body: JSON.stringify({
-          brief: payload.brief,
-          name: payload.name,
-          language: payload.language || "zh",
-        }),
+    request<{
+      content: string;
+      name: string;
+      description: string;
+      recommended_skills?: string[];
+      recommended_tools?: string[];
+      dependency_rationale?: string;
+    }>("/skills/ai/generate", {
+      method: "POST",
+      body: JSON.stringify({
+        brief: payload.brief,
+        name: payload.name,
+        language: payload.language || "zh",
+        sop_text: payload.sop_text,
+        available_skills: payload.available_skills || [],
+        available_tools: payload.available_tools || [],
+      }),
+    }),
+
+  streamGenerateSkillWithAI: async function (
+    payload: {
+      brief: string;
+      name?: string;
+      language?: string;
+      sop_text?: string;
+      available_skills?: Array<{ name: string; description?: string }>;
+      available_tools?: Array<{
+        name: string;
+        description?: string;
+        enabled?: boolean;
+      }>;
+    },
+    handlers: {
+      onStage?: (stage: string, message: string) => void;
+      onDone: (result: {
+        content: string;
+        name: string;
+        description: string;
+        recommended_skills?: string[];
+        recommended_tools?: string[];
+        dependency_rationale?: string;
+      }) => void;
+    },
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const apiUrl = getStreamApiUrl();
+    const response = await fetch(`${apiUrl}/skills/ai/generate/stream`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildAuthHeaders(),
       },
-    ),
+      body: JSON.stringify({
+        brief: payload.brief,
+        name: payload.name,
+        language: payload.language || "zh",
+        sop_text: payload.sop_text,
+        available_skills: payload.available_skills || [],
+        available_tools: payload.available_tools || [],
+      }),
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No reader available");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) return false;
+      const data = trimmed.slice(6);
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.error) throw new Error(parsed.error);
+        if (parsed.done) {
+          handlers.onDone({
+            content: String(parsed.content || ""),
+            name: String(parsed.name || ""),
+            description: String(parsed.description || ""),
+            recommended_skills: parsed.recommended_skills || [],
+            recommended_tools: parsed.recommended_tools || [],
+            dependency_rationale: parsed.dependency_rationale || "",
+          });
+          return true;
+        }
+        if (parsed.stage && parsed.message) {
+          handlers.onStage?.(String(parsed.stage), String(parsed.message));
+        }
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err;
+      }
+      return false;
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (consumeLine(line)) return;
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) consumeLine(buffer);
+    } finally {
+      reader.releaseLock();
+    }
+  },
+
+  parseSopDocument: async (file: File, language: string = "zh") => {
+    const formData = new FormData();
+    formData.append("file", file);
+    const url = getApiUrl(
+      `/skills/ai/parse-sop?language=${encodeURIComponent(language)}`,
+    );
+    const response = await fetch(url, {
+      method: "POST",
+      headers: buildAuthHeaders(),
+      body: formData,
+    });
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(text || `SOP parse failed: ${response.status}`);
+    }
+    return (await response.json()) as {
+      text: string;
+      summary: string;
+      process_steps: string[];
+      entities: string[];
+    };
+  },
+
+  streamDebugSkillRun: async function (
+    payload: {
+      skill_content: string;
+      message: string;
+      model_slot?: string;
+      language?: string;
+    },
+    onChunk: (text: string) => void,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const apiUrl = getStreamApiUrl();
+    const response = await fetch(`${apiUrl}/skills/ai/debug/run`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...buildAuthHeaders(),
+      },
+      body: JSON.stringify({
+        skill_content: payload.skill_content,
+        message: payload.message,
+        model_slot: payload.model_slot,
+        language: payload.language || "zh",
+      }),
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const reader = response.body?.getReader();
+    if (!reader) throw new Error("No reader available");
+    const decoder = new TextDecoder();
+    let buffer = "";
+    const consumeLine = (line: string) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data: ")) return false;
+      const data = trimmed.slice(6);
+      try {
+        const parsed = JSON.parse(data);
+        if (parsed.text) onChunk(parsed.text);
+        else if (parsed.error) throw new Error(parsed.error);
+        else if (parsed.done) return true;
+      } catch (err) {
+        if (!(err instanceof SyntaxError)) throw err;
+      }
+      return false;
+    };
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+        for (const line of lines) {
+          if (consumeLine(line)) return;
+        }
+      }
+      buffer += decoder.decode();
+      if (buffer.trim()) consumeLine(buffer);
+    } finally {
+      reader.releaseLock();
+    }
+  },
 
   streamOptimizeSkill: async function (
     content: string,

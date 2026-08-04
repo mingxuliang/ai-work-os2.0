@@ -1,3 +1,5 @@
+import { DEFAULT_AGENT_ID } from "./agentDisplayName";
+
 const STORAGE_KEY = "qwenpaw.agentTeamPresentation.v1";
 
 /** Where the agent was created from: the admin-managed "Agent 团队" page,
@@ -20,6 +22,11 @@ const defaults: AgentTeamPresentation = {
   summoned: false,
   origin: "team",
 };
+
+/** Default agent is system-owned: every user has it, no summon required. */
+export function isAlwaysSummonedAgent(agentId: string): boolean {
+  return agentId === DEFAULT_AGENT_ID;
+}
 
 function readAll(): Record<string, AgentTeamPresentation> {
   try {
@@ -60,7 +67,11 @@ export function loadAgentPresentation(
   agentId: string,
 ): AgentTeamPresentation {
   const row = readAll()[agentId];
-  return row ? { ...row } : { ...defaults };
+  const base = row ? { ...row } : { ...defaults };
+  if (isAlwaysSummonedAgent(agentId)) {
+    return { ...base, summoned: true };
+  }
+  return base;
 }
 
 export function saveAgentPresentation(
@@ -69,34 +80,41 @@ export function saveAgentPresentation(
 ) {
   const all = readAll();
   const prev = all[agentId] ?? { ...defaults };
+  const nextSummoned = isAlwaysSummonedAgent(agentId)
+    ? true
+    : (data.summoned ?? prev.summoned);
   all[agentId] = {
     iconKey: data.iconKey ?? prev.iconKey,
     tags: data.tags ?? prev.tags,
     category: data.category ?? prev.category,
-    summoned: data.summoned ?? prev.summoned,
+    summoned: nextSummoned,
     origin: data.origin ?? prev.origin,
   };
   writeAll(all);
 }
 
 export function removeAgentPresentation(agentId: string) {
+  if (isAlwaysSummonedAgent(agentId)) return;
   const all = readAll();
   delete all[agentId];
   writeAll(all);
 }
 
-/** Returns IDs of all agents marked as summoned. */
+/** Returns IDs of all agents marked as summoned (Default always included). */
 export function getSummonedAgentIds(): Set<string> {
   const all = readAll();
-  return new Set(
+  const ids = new Set(
     Object.entries(all)
       .filter(([, v]) => v.summoned)
       .map(([id]) => id),
   );
+  ids.add(DEFAULT_AGENT_ID);
+  return ids;
 }
 
 /** Toggle the summoned state for an agent. Returns the new state. */
 export function toggleSummoned(agentId: string): boolean {
+  if (isAlwaysSummonedAgent(agentId)) return true;
   const all = readAll();
   const prev = all[agentId] ?? { ...defaults };
   const next = !prev.summoned;

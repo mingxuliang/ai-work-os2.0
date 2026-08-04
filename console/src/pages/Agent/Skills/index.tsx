@@ -3,7 +3,7 @@ import { PlusOutlined } from "@ant-design/icons";
 import { Button } from "@agentscope-ai/design";
 import {
   SkillCard,
-  SkillDrawer,
+  SkillCreationModal,
   PoolTransferModal,
   ImportHubModal,
   HeaderActions,
@@ -29,11 +29,10 @@ function SkillsPage() {
     loading,
     uploading,
     importing,
-    drawerOpen,
+    createModalOpen,
     importModalOpen,
     setImportModalOpen,
     editingSkill,
-    form,
     fileInputRef,
     poolModal,
     setPoolModal,
@@ -48,11 +47,11 @@ function SkillsPage() {
     searchTags,
     setSearchTags,
     handleCreate,
+    handleCreateModalClose,
+    handleCreated,
     handleEdit,
     handleToggleEnabled,
     handleDelete,
-    handleDrawerClose,
-    handleSubmit,
     handleUploadToPool,
     handleDownloadFromPool,
     handleBatchEnable,
@@ -214,13 +213,23 @@ function SkillsPage() {
 
         {conflictRenameModal}
 
-        <SkillDrawer
-          open={drawerOpen}
-          editingSkill={editingSkill}
-          form={form}
-          availableTags={allTags}
-          onClose={handleDrawerClose}
-          onSubmit={handleSubmit}
+        <SkillCreationModal
+          open={createModalOpen}
+          target="workspace"
+          editingSkill={
+            editingSkill
+              ? {
+                  name: editingSkill.name,
+                  description: editingSkill.description,
+                  content: editingSkill.content,
+                  sourceName: editingSkill.name,
+                  source: editingSkill.source,
+                }
+              : null
+          }
+          onClose={handleCreateModalClose}
+          onCreated={() => void handleCreated()}
+          onSaved={() => void handleCreated()}
         />
       </div>
     </CopawWorkbenchShell>

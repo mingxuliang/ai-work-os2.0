@@ -43,6 +43,14 @@ export function SkillListItem({
         if (batchModeEnabled) onSelect();
         else onClick();
       }}
+      style={{
+        cursor: isBuiltin && !batchModeEnabled ? "default" : "pointer",
+      }}
+      title={
+        isBuiltin && !batchModeEnabled
+          ? t("skills.builtinNotEditable")
+          : undefined
+      }
     >
       {batchModeEnabled && (
         <Checkbox

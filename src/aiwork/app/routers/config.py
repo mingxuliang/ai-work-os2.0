@@ -32,6 +32,7 @@ from ...config.config import (
     ConsoleConfig,
     DingTalkConfig,
     DiscordConfig,
+    ExecutionSandboxConfig,
     FeishuConfig,
     HeartbeatConfig,
     IMessageChannelConfig,
@@ -951,6 +952,84 @@ async def put_sandbox_setting(
         effective=effective,
         reason=reason,
     )
+
+
+# ── Security / Execution Sandbox ─────────────────────────────────────
+
+
+class ExecutionSandboxStatusResponse(BaseModel):
+    effective_enabled: bool
+    effective_backend: str
+    docker_available: bool
+    docker_image_present: bool
+    docker_image: str
+    env_enabled: Optional[str] = None
+    env_backend: Optional[str] = None
+    session_containers: dict
+
+
+@router.get(
+    "/security/execution-sandbox",
+    response_model=ExecutionSandboxConfig,
+    summary="Get execution sandbox settings",
+)
+async def get_execution_sandbox() -> ExecutionSandboxConfig:
+    config = load_config()
+    return config.security.execution_sandbox
+
+
+@router.put(
+    "/security/execution-sandbox",
+    response_model=ExecutionSandboxConfig,
+    summary="Update execution sandbox settings",
+)
+async def put_execution_sandbox(
+    body: ExecutionSandboxConfig = Body(...),
+) -> ExecutionSandboxConfig:
+    if body.enabled and body.backend == "off":
+        raise HTTPException(
+            status_code=400,
+            detail="backend cannot be 'off' when execution sandbox is enabled",
+        )
+    config = load_config()
+    config.security.execution_sandbox = body
+    # Keep governance switch aligned with execution sandbox enablement.
+    if body.enabled:
+        config.security.sandbox_enabled = True
+    save_config(config)
+    return body
+
+
+@router.get(
+    "/security/execution-sandbox/status",
+    response_model=ExecutionSandboxStatusResponse,
+    summary="Get execution sandbox runtime status",
+)
+async def get_execution_sandbox_status_api() -> ExecutionSandboxStatusResponse:
+    from ...security.sandbox.status import (
+        get_execution_sandbox_status as _get_status,
+    )
+
+    status = await _get_status()
+    return ExecutionSandboxStatusResponse(**status.to_dict())
+
+
+@router.delete(
+    "/security/execution-sandbox/session-containers/{session_key:path}",
+    summary="Destroy one session container",
+)
+async def destroy_session_container(session_key: str) -> dict[str, bool]:
+    from ...security.sandbox.session_container_manager import (
+        get_session_container_manager,
+    )
+
+    destroyed = await get_session_container_manager().destroy(session_key)
+    if not destroyed:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Session container not found: {session_key}",
+        )
+    return {"destroyed": True}
 
 
 # ── Security / File Guard ────────────────────────────────────────────

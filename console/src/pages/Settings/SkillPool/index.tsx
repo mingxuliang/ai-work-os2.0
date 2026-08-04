@@ -1,3 +1,5 @@
+import { useEffect, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { Button, Input, Select, Tooltip } from "@agentscope-ai/design";
 import { Badge } from "antd";
 import {
@@ -15,24 +17,68 @@ import {
 import { useTranslation } from "react-i18next";
 import { ImportHubModal } from "../../Agent/Skills/components/ImportHubModal";
 import { SkillFilterDropdown } from "../../Agent/Skills/components/SkillFilterDropdown";
+import { SkillCreationModal } from "../../Agent/Skills/components";
 import {
   BroadcastModal,
   ImportBuiltinModal,
   PoolSkillCard,
   PoolSkillListItem,
-  PoolSkillDrawer,
 } from "./components";
 import { getBuiltinNoticeLines } from "./builtinNotice";
 import { useSkillPool } from "./useSkillPool";
 import { useProgressiveRender } from "../../../hooks/useProgressiveRender";
 import { PageHeader } from "@/components/PageHeader";
 import { CopawWorkbenchShell } from "@/components/CopawWorkbenchShell";
+import { useAppMessage } from "@/hooks/useAppMessage";
+import { isSkillBuiltin } from "@/utils/skill";
 import type { PoolSkillSpec } from "../../../api/types";
 import styles from "./index.module.less";
 
 function SkillPoolPage() {
   const { t } = useTranslation();
+  const { message } = useAppMessage();
+  const [searchParams, setSearchParams] = useSearchParams();
   const pool = useSkillPool();
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [editingPoolSkill, setEditingPoolSkill] = useState<PoolSkillSpec | null>(
+    null,
+  );
+  const focusHandledRef = useRef<string | null>(null);
+  const focusName = searchParams.get("focus")?.trim() || "";
+
+  const handleEditPoolSkill = (skill: PoolSkillSpec) => {
+    if (isSkillBuiltin(skill.source)) {
+      message.warning(t("skills.builtinNotEditable"));
+      return;
+    }
+    setEditingPoolSkill(skill);
+  };
+
+  // Deep-link from Skill Store: /skill-pool?focus=<name>
+  useEffect(() => {
+    if (!focusName || pool.loading) return;
+    if (focusHandledRef.current === focusName) return;
+    focusHandledRef.current = focusName;
+    void pool.revealSkill(focusName, { refresh: true, toast: true }).then(() => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("focus");
+          return next;
+        },
+        { replace: true },
+      );
+    });
+  }, [focusName, pool.loading, pool.revealSkill, setSearchParams]);
+
+  useEffect(() => {
+    if (!pool.highlightName) return;
+    const el = document.querySelector(
+      `[data-skill-name="${CSS.escape(pool.highlightName)}"]`,
+    );
+    el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [pool.highlightName, pool.sortedSkills]);
+
   const builtinNoticeLines = getBuiltinNoticeLines(pool.builtinNotice, t);
   const {
     visibleItems: visibleSkills,
@@ -164,7 +210,7 @@ function SkillPoolPage() {
                         type="primary"
                         className={styles.primaryActionButton}
                         icon={<PlusOutlined />}
-                        onClick={pool.openCreate}
+                        onClick={() => setCreateModalOpen(true)}
                       >
                         {t("skills.createSkill")}
                       </Button>
@@ -254,16 +300,17 @@ function SkillPoolPage() {
             </span>
           </div>
         ) : pool.viewMode === "card" ? (
-          <div className="cbc-agent-grid">
+          <div className={`cbc-agent-grid ${styles.poolGrid}`}>
             {visibleSkills.map((skill: PoolSkillSpec, index: number) => (
               <PoolSkillCard
                 key={skill.name}
                 cardIndex={index}
                 skill={skill}
                 isSelected={pool.selectedPoolSkills.has(skill.name)}
+                isHighlighted={pool.highlightName === skill.name}
                 batchModeEnabled={pool.batchModeEnabled}
                 onToggleSelect={pool.togglePoolSelect}
-                onEdit={pool.openEdit}
+                onEdit={handleEditPoolSkill}
                 onBroadcast={pool.openBroadcast}
                 onDelete={pool.handleDelete}
               />
@@ -277,9 +324,10 @@ function SkillPoolPage() {
                 key={skill.name}
                 skill={skill}
                 isSelected={pool.selectedPoolSkills.has(skill.name)}
+                isHighlighted={pool.highlightName === skill.name}
                 batchModeEnabled={pool.batchModeEnabled}
                 onToggleSelect={pool.togglePoolSelect}
-                onEdit={pool.openEdit}
+                onEdit={handleEditPoolSkill}
                 onBroadcast={pool.openBroadcast}
                 onDelete={pool.handleDelete}
               />
@@ -318,21 +366,34 @@ function SkillPoolPage() {
         onConfirm={pool.handleImportBuiltins}
       />
 
-      <PoolSkillDrawer
-        mode={pool.mode}
-        activeSkill={pool.activeSkill}
-        form={pool.form}
-        drawerContent={pool.drawerContent}
-        showMarkdown={pool.showMarkdown}
-        configText={pool.configText}
-        availableTags={pool.allTags}
-        onClose={pool.closeDrawer}
-        onSave={pool.handleSavePoolSkill}
-        onContentChange={pool.handleDrawerContentChange}
-        onShowMarkdownChange={pool.setShowMarkdown}
-        onConfigTextChange={pool.setConfigText}
-        onChangeBuiltinLanguage={pool.handleBuiltinLanguageSwitch}
-        validateFrontmatter={pool.validateFrontmatter}
+      <SkillCreationModal
+        open={createModalOpen || !!editingPoolSkill}
+        target="pool"
+        editingSkill={
+          editingPoolSkill
+            ? {
+                name: editingPoolSkill.name,
+                description: editingPoolSkill.description,
+                content: editingPoolSkill.content,
+                sourceName: editingPoolSkill.name,
+                source: editingPoolSkill.source,
+              }
+            : null
+        }
+        onClose={() => {
+          setCreateModalOpen(false);
+          setEditingPoolSkill(null);
+        }}
+        onCreated={(result) => {
+          setCreateModalOpen(false);
+          setEditingPoolSkill(null);
+          void pool.revealSkill(result.name, { refresh: true, toast: true });
+        }}
+        onSaved={(result) => {
+          setCreateModalOpen(false);
+          setEditingPoolSkill(null);
+          void pool.revealSkill(result.name, { refresh: true, toast: true });
+        }}
       />
 
       {pool.conflictRenameModal}

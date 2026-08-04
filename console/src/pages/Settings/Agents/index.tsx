@@ -136,6 +136,10 @@ export default function AgentsPage() {
   };
 
   const handleDelete = async (agentId: string) => {
+    if (agentId === "default") {
+      message.warning(t("agent.defaultNotDeletable"));
+      return;
+    }
     try {
       await deleteAgent(agentId);
       removeAgentPresentation(agentId);

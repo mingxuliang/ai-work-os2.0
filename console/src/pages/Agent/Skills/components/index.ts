@@ -6,6 +6,12 @@ export {
   MAX_TAG_LENGTH,
   type SkillDrawerFormValues,
 } from "./SkillDrawer";
+export {
+  SkillCreationModal,
+  type SkillCreationTarget,
+  type SkillCreationResult,
+  type SkillEditSource,
+} from "./SkillCreationModal";
 export { getFileIcon, getSkillVisual } from "./SkillCard";
 export {
   getSkillDisplaySource,

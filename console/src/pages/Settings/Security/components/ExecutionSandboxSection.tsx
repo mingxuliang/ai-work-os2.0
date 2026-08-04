@@ -189,8 +189,10 @@ export function ExecutionSandboxSection({
           <Button
             size="small"
             icon={<ReloadOutlined />}
-            loading={statusLoading}
-            onClick={fetchStatus}
+            loading={loading || statusLoading}
+            onClick={() => {
+              void fetchData();
+            }}
           >
             {t("security.executionSandbox.refreshStatus")}
           </Button>

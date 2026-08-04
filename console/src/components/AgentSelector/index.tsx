@@ -10,6 +10,7 @@ import { useNavigate } from "react-router-dom";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useAppMessage } from "../../hooks/useAppMessage";
 import { getSummonedAgentIds } from "../../utils/agentPresentationStorage";
+import { DEFAULT_AGENT_ID } from "../../utils/agentDisplayName";
 import type { AgentSummary } from "../../api/types/agents";
 import modelUi from "../../pages/Chat/ModelSelector/index.module.less";
 import styles from "./index.module.less";
@@ -58,12 +59,14 @@ export default function AgentSelector({
     void loadAgents();
   }, [loadAgents]);
 
-  /** Chat toolbar: only agents in「我的AI团队」(summoned). Sidebar: all agents. */
+  /** Chat toolbar: Default + agents in「我的AI团队」(summoned). Sidebar: all agents. */
   const selectableAgents = useMemo(() => {
     if (!agents?.length) return EMPTY_AGENTS;
     if (variant !== "chatToolbar") return agents;
     const summonedIds = getSummonedAgentIds();
-    return agents.filter((a) => summonedIds.has(a.id));
+    return agents.filter(
+      (a) => a.id === DEFAULT_AGENT_ID || summonedIds.has(a.id),
+    );
   }, [agents, variant]);
 
   const selectAgentById = useCallback(

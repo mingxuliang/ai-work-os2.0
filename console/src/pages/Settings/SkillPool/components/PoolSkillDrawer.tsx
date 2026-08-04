@@ -1,10 +1,6 @@
-import { useEffect, useState } from "react";
 import { Button, Drawer, Form, Input, Select } from "@agentscope-ai/design";
-import { ThunderboltOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
-import { api } from "../../../../api";
 import type { PoolSkillSpec } from "../../../../api/types";
-import { useAppMessage } from "../../../../hooks/useAppMessage";
 import {
   getPoolBuiltinStatusLabel,
   getPoolBuiltinStatusTone,
@@ -13,7 +9,6 @@ import {
 import {
   MAX_TAGS,
   MAX_TAG_LENGTH,
-  parseFrontmatter,
 } from "../../../Agent/Skills/components";
 import { MarkdownCopy } from "../../../../components/MarkdownCopy/MarkdownCopy";
 import type { PoolMode } from "../useSkillPool";
@@ -54,95 +49,30 @@ export function PoolSkillDrawer({
   onChangeBuiltinLanguage,
   validateFrontmatter,
 }: PoolSkillDrawerProps) {
-  const { t, i18n } = useTranslation();
-  const { message } = useAppMessage();
-  const [aiBrief, setAiBrief] = useState("");
-  const [generating, setGenerating] = useState(false);
-
-  useEffect(() => {
-    if (mode === "create") {
-      setAiBrief("");
-      setGenerating(false);
-    }
-  }, [mode]);
-
-  const handleGenerate = async () => {
-    const brief =
-      aiBrief.trim() ||
-      String(form.getFieldValue("name") || "").trim() ||
-      drawerContent.trim();
-    if (!brief) {
-      message.warning(t("skills.generateBriefRequired"));
-      return;
-    }
-    setGenerating(true);
-    try {
-      const preferredName = String(form.getFieldValue("name") || "").trim();
-      const res = await api.generateSkillWithAI({
-        brief,
-        name: preferredName || undefined,
-        language: i18n.language,
-      });
-      onContentChange(res.content);
-      form.setFieldsValue({ content: res.content });
-      const fm = parseFrontmatter(res.content);
-      const nextName = (res.name || fm?.name || "").trim();
-      if (nextName) {
-        form.setFieldsValue({ name: nextName });
-      }
-      form.validateFields(["content"]).catch(() => {});
-      message.success(t("skills.generateSuccess"));
-    } catch (error: unknown) {
-      message.error(
-        error instanceof Error ? error.message : t("skills.generateFailed"),
-      );
-    } finally {
-      setGenerating(false);
-    }
-  };
+  const { t } = useTranslation();
 
   return (
     <Drawer
       rootClassName="copaw-ported-drawer"
       width={520}
       placement="right"
-      title={
-        mode === "edit"
-          ? t("skillPool.editTitle", { name: activeSkill?.name || "" })
-          : t("skillPool.createTitle")
-      }
-      open={mode === "create" || mode === "edit"}
+      title={t("skillPool.editTitle", { name: activeSkill?.name || "" })}
+      open={mode === "edit"}
       onClose={onClose}
       destroyOnClose
       footer={
         <div
           style={{
             display: "flex",
-            justifyContent: mode === "create" ? "space-between" : "flex-end",
+            justifyContent: "flex-end",
             width: "100%",
             gap: 8,
           }}
         >
-          {mode === "create" ? (
-            <Button
-              type="default"
-              icon={<ThunderboltOutlined />}
-              onClick={handleGenerate}
-              loading={generating}
-            >
-              {t("skills.generateWithAI")}
-            </Button>
-          ) : (
-            <span />
-          )}
-          <div style={{ display: "flex", gap: 8 }}>
-            <Button onClick={onClose} disabled={generating}>
-              {t("common.cancel")}
-            </Button>
-            <Button type="primary" onClick={onSave} disabled={generating}>
-              {mode === "edit" ? t("common.save") : t("common.create")}
-            </Button>
-          </div>
+          <Button onClick={onClose}>{t("common.cancel")}</Button>
+          <Button type="primary" onClick={onSave}>
+            {t("common.save")}
+          </Button>
         </div>
       }
     >
@@ -195,21 +125,6 @@ export function PoolSkillDrawer({
         >
           <Input placeholder={t("skillPool.skillNamePlaceholder")} />
         </Form.Item>
-
-        {mode === "create" && (
-          <Form.Item
-            label={t("skills.generateBriefLabel")}
-            tooltip={t("skills.generateBriefHint")}
-          >
-            <Input.TextArea
-              rows={3}
-              value={aiBrief}
-              onChange={(e) => setAiBrief(e.target.value)}
-              placeholder={t("skills.generateBriefPlaceholder")}
-              disabled={generating}
-            />
-          </Form.Item>
-        )}
 
         <Form.Item
           name="content"

@@ -3,12 +3,14 @@
 """Streaming AI skill optimization / generation API."""
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
-from typing import Optional
+from collections.abc import Awaitable, Callable
+from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -25,14 +27,16 @@ from ...agents.skill_system.store import (
 logger = logging.getLogger(__name__)
 
 
-def get_model():
+def get_model(model_slot_override: Any = None):
     """Get the active chat model instance.
 
     Returns:
         Chat model instance or None if not configured
     """
     try:
-        model, _ = create_model_and_formatter()
+        model, _ = create_model_and_formatter(
+            model_slot_override=model_slot_override,
+        )
         return model
     except (ValueError, AppBaseException) as e:
         logger.warning("Failed to get model: %s", e)
@@ -202,7 +206,10 @@ Schema:
 {
   "name": "skill_id",
   "description": "在…时使用。产出…",
-  "body": "# 标题\\n\\n## 适用场景\\n...\\n\\n## 需收集信息\\n...\\n\\n## 执行流程\\n...\\n\\n## 工具与来源\\n...\\n\\n## 输出模板\\n...\\n\\n## 质检要点\\n..."
+  "body": "# 标题\\n\\n## 适用场景\\n...",
+  "recommended_skills": ["skill_a"],
+  "recommended_tools": ["browser_use", "web_search"],
+  "dependency_rationale": "选择这些依赖的原因"
 }
 
 规则：
@@ -216,6 +223,7 @@ Schema:
   4) 工具与来源 — 优先用哪些工具/网站/检索策略，如何交叉验证
   5) 输出模板 — 智能体最终回复必须遵循的 Markdown/表格结构
   6) 质检要点 — 时效性、来源标注、避免编造
+- recommended_skills / recommended_tools：只能从用户提供的目录中选择；需要上网时优先 browser_use、web_search 及 browser_* 类 skill；无需依赖时返回空数组。
 - body 必须紧贴用户需求领域（例如“标讯/招标信息”不能写成泛泛网页搜索）。
 - body 内禁止再写 YAML frontmatter。
 - 不要编造不存在的私有 API 或密钥。
@@ -260,6 +268,17 @@ class AIOptimizeSkillRequest(BaseModel):
     )
 
 
+class CatalogSkillItem(BaseModel):
+    name: str
+    description: Optional[str] = None
+
+
+class CatalogToolItem(BaseModel):
+    name: str
+    description: Optional[str] = None
+    enabled: Optional[bool] = True
+
+
 class AIGenerateSkillRequest(BaseModel):
     brief: str = Field(
         ...,
@@ -274,12 +293,38 @@ class AIGenerateSkillRequest(BaseModel):
         default="zh",
         description="Language for generation (en, zh, ru)",
     )
+    sop_text: Optional[str] = Field(
+        default=None,
+        description="Extracted SOP document text to ground the skill",
+    )
+    available_skills: list[CatalogSkillItem] = Field(default_factory=list)
+    available_tools: list[CatalogToolItem] = Field(default_factory=list)
 
 
 class AIGenerateSkillResponse(BaseModel):
     content: str
     name: str
     description: str
+    recommended_skills: list[str] = Field(default_factory=list)
+    recommended_tools: list[str] = Field(default_factory=list)
+    dependency_rationale: str = ""
+
+
+class ParseSopResponse(BaseModel):
+    text: str
+    summary: str = ""
+    process_steps: list[str] = Field(default_factory=list)
+    entities: list[str] = Field(default_factory=list)
+
+
+class DebugRunRequest(BaseModel):
+    skill_content: str = Field(..., min_length=1)
+    message: str = Field(..., min_length=1)
+    model_slot: Optional[str] = Field(
+        default=None,
+        description="Optional provider:model override",
+    )
+    language: str = Field(default="zh")
 
 
 router = APIRouter(tags=["skills"])
@@ -295,28 +340,22 @@ def _normalize_language(language: str | None) -> str:
 
 
 def _extract_text_from_chunk(chunk) -> str:
-    """Extract text content from a response chunk."""
-    if not hasattr(chunk, "content"):
-        return ""
+    """Extract text content from a response chunk.
 
-    if isinstance(chunk.content, str):
-        return chunk.content
+    Delegates to ``extract_response_text`` so ChatResponse / TextBlock /
+    dict-like provider chunks are all handled (DeepSeek etc. often omit a
+    plain ``content`` string and only expose ``.text``).
+    """
+    from ...utils.model_response import extract_response_text
 
-    if isinstance(chunk.content, list):
-        for item in chunk.content:
-            if isinstance(item, dict) and "text" in item:
-                return item["text"]
-
-    return ""
+    return extract_response_text(chunk) or ""
 
 
 def _extract_text_from_response(response) -> str:
     """Extract text from a non-streaming response."""
-    if hasattr(response, "text"):
-        return response.text
-    if isinstance(response, str):
-        return response
-    return ""
+    from ...utils.model_response import extract_response_text
+
+    return extract_response_text(response) or ""
 
 
 def _strip_code_fences(content: str) -> str:
@@ -436,9 +475,10 @@ async def _call_model_text(
     system_prompt: str,
     user_prompt: str,
     stream: bool = False,
+    model_slot_override: Any = None,
 ):
     """Call the active model; optionally yield text deltas."""
-    model = get_model()
+    model = get_model(model_slot_override=model_slot_override)
     if not model:
         raise HTTPException(
             status_code=400,
@@ -565,6 +605,19 @@ def _validate_or_raise(content: str) -> tuple[str, str]:
         raise HTTPException(status_code=502, detail=str(exc.message)) from exc
 
 
+ProgressCallback = Callable[[str, str], Awaitable[None]]
+
+
+async def _emit_progress(
+    on_progress: ProgressCallback | None,
+    stage: str,
+    message: str,
+) -> None:
+    if on_progress is None:
+        return
+    await on_progress(stage, message)
+
+
 async def _finalize_skill(
     *,
     brief: str,
@@ -572,10 +625,17 @@ async def _finalize_skill(
     description: str,
     body: str,
     language: str,
+    on_progress: ProgressCallback | None = None,
 ) -> tuple[str, str, str]:
     """Expand thin bodies, then assemble a validated SKILL.md."""
     final_body = body
     if _body_is_thin(final_body):
+        lang = _normalize_language(language)
+        await _emit_progress(
+            on_progress,
+            "expand",
+            "正在扩写 Skill 正文…" if lang == "zh" else "Expanding skill body…",
+        )
         try:
             final_body = await _expand_skill_body(
                 brief=brief,
@@ -598,12 +658,27 @@ async def _generate_valid_skill_md(
     brief: str,
     preferred_name: str | None,
     language: str,
-) -> tuple[str, str, str]:
-    """Generate a skill via structured JSON, then assemble SKILL.md in code."""
+    available_skills: list | None = None,
+    available_tools: list | None = None,
+    on_progress: ProgressCallback | None = None,
+) -> tuple[str, str, str, dict]:
+    """Generate a skill via structured JSON, then assemble SKILL.md in code.
+
+    Returns (content, name, description, meta) where meta may include
+    recommended_skills / recommended_tools / dependency_rationale.
+    """
     lang = _normalize_language(language)
     system_prompt = GENERATE_SYSTEM_PROMPTS.get(
         lang,
         GENERATE_SYSTEM_PROMPTS["en"],
+    )
+
+    await _emit_progress(
+        on_progress,
+        "catalog",
+        "正在匹配 Skills / 工具目录…"
+        if lang == "zh"
+        else "Building skills/tools catalog…",
     )
 
     normalized_name = None
@@ -617,12 +692,43 @@ async def _generate_valid_skill_md(
             ) from exc
 
     fallback_name = normalized_name or _slug_skill_name(brief)
+    skill_lines = []
+    for item in available_skills or []:
+        nm = getattr(item, "name", None) or (
+            item.get("name") if isinstance(item, dict) else None
+        )
+        if not nm:
+            continue
+        desc = getattr(item, "description", None) or (
+            item.get("description") if isinstance(item, dict) else ""
+        )
+        skill_lines.append(f"- {nm}: {(desc or '')[:120]}")
+    tool_lines = []
+    for item in available_tools or []:
+        nm = getattr(item, "name", None) or (
+            item.get("name") if isinstance(item, dict) else None
+        )
+        if not nm:
+            continue
+        desc = getattr(item, "description", None) or (
+            item.get("description") if isinstance(item, dict) else ""
+        )
+        tool_lines.append(f"- {nm}: {(desc or '')[:120]}")
+    catalog_block = (
+        "\n可用 Skills 目录（只能从中选择 recommended_skills）:\n"
+        + ("\n".join(skill_lines) if skill_lines else "(空)")
+        + "\n\n可用内置工具目录（只能从中选择 recommended_tools）:\n"
+        + ("\n".join(tool_lines) if tool_lines else "(空)")
+        + "\n"
+    )
+
     if lang == "zh":
         user_prompt = (
             "根据需求生成【详细】skill JSON（仅 JSON）。\n"
             "body 必须是可执行手册，不要空泛 3 步模板。\n"
             f"preferred_name: {normalized_name or '(可自拟合适名称)'}\n"
             f"brief:\n{brief.strip()}\n"
+            f"{catalog_block}"
         )
     else:
         user_prompt = (
@@ -630,8 +736,16 @@ async def _generate_valid_skill_md(
             "body must be an actionable playbook, not a 3-bullet stub.\n"
             f"preferred_name: {normalized_name or '(invent a good name)'}\n"
             f"brief:\n{brief.strip()}\n"
+            f"{catalog_block}"
         )
 
+    await _emit_progress(
+        on_progress,
+        "drafting",
+        "正在调用模型生成 Skill…"
+        if lang == "zh"
+        else "Calling model to draft skill…",
+    )
     raw = await _call_model_text(
         system_prompt=system_prompt,
         user_prompt=user_prompt,
@@ -659,13 +773,22 @@ async def _generate_valid_skill_md(
                 else f"Use when the user needs help with: {brief.strip()[:80]}"
             )
         try:
-            return await _finalize_skill(
+            content, vname, vdesc = await _finalize_skill(
                 brief=brief,
                 name=name,
                 description=description,
                 body=body,
                 language=lang,
+                on_progress=on_progress,
             )
+            meta = {
+                "recommended_skills": list(data.get("recommended_skills") or []),
+                "recommended_tools": list(data.get("recommended_tools") or []),
+                "dependency_rationale": str(
+                    data.get("dependency_rationale") or ""
+                ),
+            }
+            return content, vname, vdesc, meta
         except SkillsError as exc:
             logger.warning(
                 "Structured skill assemble failed, falling back: %s",
@@ -683,13 +806,15 @@ async def _generate_valid_skill_md(
         if body.startswith("---"):
             end = body.find("\n---", 3)
             body = body[end + len("\n---") :].strip() if end >= 0 else body
-        return await _finalize_skill(
+        content, vname, vdesc = await _finalize_skill(
             brief=brief,
             name=normalized_name or name,
             description=description,
             body=body,
             language=lang,
+            on_progress=on_progress,
         )
+        return content, vname, vdesc, {}
     except SkillsError as exc:
         validation_error = str(exc.message or exc)
         logger.warning(
@@ -711,12 +836,176 @@ async def _generate_valid_skill_md(
         if lang == "zh"
         else f"# {fallback_name}\n\n## When to use\n{brief.strip()}\n"
     )
-    return await _finalize_skill(
+    content, vname, vdesc = await _finalize_skill(
         brief=brief,
         name=fallback_name,
         description=description,
         body=seed_body,
         language=lang,
+        on_progress=on_progress,
+    )
+    return content, vname, vdesc, {}
+
+
+
+
+def _filter_catalog_names(names: list, catalog: list[str]) -> list[str]:
+    """Keep only names that exist in catalog (case-insensitive)."""
+    allowed = {n.lower(): n for n in catalog}
+    out: list[str] = []
+    for raw in names or []:
+        key = str(raw or "").strip().lower()
+        if key and key in allowed and allowed[key] not in out:
+            out.append(allowed[key])
+    return out
+
+
+_WEB_BRIEF_KEYS = (
+    "上网",
+    "互联网",
+    "搜索",
+    "网页",
+    "browser",
+    "web",
+    "搜索引擎",
+    "查网",
+    "资讯",
+    "新闻",
+    "招标",
+    "标讯",
+    "投标",
+    "采购",
+    "爬取",
+    "抓取",
+    "采集",
+    "官网",
+    "网站",
+    "外网",
+)
+
+
+def _heuristic_tool_recs(brief: str, tool_names: list[str]) -> list[str]:
+    """Fallback recommendations when the model omits deps."""
+    text = (brief or "").lower()
+    picks: list[str] = []
+    if any(k in text for k in _WEB_BRIEF_KEYS):
+        for candidate in ("browser_use", "web_search", "web_fetch"):
+            if candidate in tool_names and candidate not in picks:
+                picks.append(candidate)
+    return picks
+
+
+def _heuristic_skill_recs(brief: str, skill_names: list[str]) -> list[str]:
+    text = (brief or "").lower()
+    picks: list[str] = []
+    if any(k in text for k in _WEB_BRIEF_KEYS):
+        for sn in skill_names:
+            low = sn.lower()
+            if (
+                low.startswith("browser")
+                or "web_search" in low
+                or "web-search" in low
+            ) and sn not in picks:
+                picks.append(sn)
+    return picks[:5]
+
+
+def _extract_catalog_mentions(text: str, catalog: list[str]) -> list[str]:
+    """Find catalog names mentioned in markdown/body (backticks or bare)."""
+    if not text or not catalog:
+        return []
+    allowed = {n.lower(): n for n in catalog}
+    found: list[str] = []
+    # Prefer backtick mentions: `browser_use`
+    for m in re.finditer(r"`([A-Za-z0-9_./-]+)`", text):
+        key = m.group(1).strip().lower()
+        if key in allowed and allowed[key] not in found:
+            found.append(allowed[key])
+    # Then whole-word-ish bare mentions for remaining catalog entries
+    lower_text = text.lower()
+    for key, canon in allowed.items():
+        if canon in found:
+            continue
+        if re.search(rf"(?<![A-Za-z0-9_]){re.escape(key)}(?![A-Za-z0-9_])", lower_text):
+            found.append(canon)
+    return found
+
+
+def _inject_dependency_sections(
+    body: str,
+    *,
+    skills: list[str],
+    tools: list[str],
+    language: str,
+) -> str:
+    """Append dependency sections if missing."""
+    text = (body or "").rstrip()
+    lang = _normalize_language(language)
+    skill_title = "## 依赖 Skills" if lang == "zh" else "## Required Skills"
+    tool_title = "## 推荐内置工具" if lang == "zh" else "## Recommended Builtin Tools"
+    if skills and skill_title not in text:
+        lines = "\n".join(f"- `{n}`" for n in skills)
+        text = f"{text}\n\n{skill_title}\n{lines}\n"
+    if tools and tool_title not in text:
+        lines = "\n".join(f"- `{n}`" for n in tools)
+        text = f"{text}\n\n{tool_title}\n{lines}\n"
+    return text
+
+
+def _extract_file_text(filename: str, data: bytes) -> str:
+    """Extract plain text from uploaded SOP bytes."""
+    name = (filename or "").lower()
+    if name.endswith((".txt", ".md", ".markdown", ".json", ".yaml", ".yml", ".csv")):
+        for enc in ("utf-8", "utf-8-sig", "gbk", "latin-1"):
+            try:
+                return data.decode(enc)
+            except UnicodeDecodeError:
+                continue
+        return data.decode("utf-8", errors="ignore")
+
+    if name.endswith(".pdf"):
+        try:
+            from io import BytesIO
+            from pypdf import PdfReader
+
+            reader = PdfReader(BytesIO(data))
+            parts = []
+            for page in reader.pages[:40]:
+                parts.append(page.extract_text() or "")
+            return "\n".join(parts).strip()
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to parse PDF: {exc}",
+            ) from exc
+
+    if name.endswith(".docx"):
+        try:
+            from io import BytesIO
+            from docx import Document
+
+            doc = Document(BytesIO(data))
+            return "\n".join(p.text for p in doc.paragraphs if p.text).strip()
+        except ImportError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="python-docx is required to parse .docx SOP files",
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(
+                status_code=400,
+                detail=f"Failed to parse DOCX: {exc}",
+            ) from exc
+
+    if name.endswith(".doc"):
+        raise HTTPException(
+            status_code=400,
+            detail="Legacy .doc is not supported; please upload .docx/.pdf/.md/.txt",
+        )
+
+    raise HTTPException(
+        status_code=400,
+        detail=f"Unsupported SOP file type: {filename}",
     )
 
 
@@ -729,15 +1018,103 @@ async def ai_generate_skill(
     request: AIGenerateSkillRequest,
 ) -> AIGenerateSkillResponse:
     """Generate a valid SKILL.md from a natural-language brief."""
+    return await _run_generate_skill(request)
+
+
+@router.post("/skills/ai/generate/stream")
+async def ai_generate_skill_stream(request: AIGenerateSkillRequest):
+    """Stream real generation stages, then the final skill payload."""
+
+    async def generate():
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def on_progress(stage: str, message: str) -> None:
+            await queue.put({"stage": stage, "message": message})
+
+        async def worker() -> None:
+            try:
+                result = await _run_generate_skill(
+                    request,
+                    on_progress=on_progress,
+                )
+                await queue.put(
+                    {
+                        "done": True,
+                        "content": result.content,
+                        "name": result.name,
+                        "description": result.description,
+                        "recommended_skills": result.recommended_skills,
+                        "recommended_tools": result.recommended_tools,
+                        "dependency_rationale": result.dependency_rationale,
+                    },
+                )
+            except HTTPException as exc:
+                detail = exc.detail
+                if not isinstance(detail, str):
+                    detail = json.dumps(detail, ensure_ascii=False)
+                await queue.put({"error": detail})
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("AI skill generate stream failed")
+                await queue.put({"error": f"Failed to generate skill: {exc}"})
+            finally:
+                await queue.put(None)
+
+        task = asyncio.create_task(worker())
+        try:
+            while True:
+                item = await queue.get()
+                if item is None:
+                    break
+                yield (
+                    "data: "
+                    + json.dumps(item, ensure_ascii=False)
+                    + "\n\n"
+                )
+        finally:
+            await task
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _run_generate_skill(
+    request: AIGenerateSkillRequest,
+    on_progress: ProgressCallback | None = None,
+) -> AIGenerateSkillResponse:
+    """Shared generate pipeline used by JSON and SSE endpoints."""
+    lang = _normalize_language(request.language)
     brief = (request.brief or "").strip()
     if not brief:
         raise HTTPException(status_code=400, detail="brief is required")
 
+    await _emit_progress(
+        on_progress,
+        "prepare",
+        "正在分析需求与 SOP…" if lang == "zh" else "Analyzing brief and SOP…",
+    )
+
+    sop = (request.sop_text or "").strip()
+    if sop:
+        brief = f"{brief}\n\n--- SOP 文档提炼 ---\n{sop[:12000]}"
+
+    skill_catalog = [s.name for s in (request.available_skills or []) if s.name]
+    tool_catalog = [t.name for t in (request.available_tools or []) if t.name]
+
     try:
-        content, name, description = await _generate_valid_skill_md(
+        content, name, description, meta = await _generate_valid_skill_md(
             brief=brief,
             preferred_name=request.name,
             language=request.language,
+            available_skills=request.available_skills or [],
+            available_tools=request.available_tools or [],
+            on_progress=on_progress,
         )
     except HTTPException:
         raise
@@ -748,10 +1125,63 @@ async def ai_generate_skill(
             detail=f"Failed to generate skill: {exc}",
         ) from exc
 
+    await _emit_progress(
+        on_progress,
+        "assemble",
+        "正在组装 SKILL.md 并推荐依赖…"
+        if lang == "zh"
+        else "Assembling SKILL.md and dependencies…",
+    )
+
+    rec_skills = _filter_catalog_names(
+        meta.get("recommended_skills") or [],
+        skill_catalog,
+    )
+    rec_tools = _filter_catalog_names(
+        meta.get("recommended_tools") or [],
+        tool_catalog,
+    )
+    # Model often writes tools into body but leaves recommended_* empty —
+    # recover mentions + heuristics so UI can echo dependencies.
+    for name in _extract_catalog_mentions(content, tool_catalog):
+        if name not in rec_tools:
+            rec_tools.append(name)
+    for name in _extract_catalog_mentions(content, skill_catalog):
+        if name not in rec_skills:
+            rec_skills.append(name)
+    if not rec_tools:
+        rec_tools = _heuristic_tool_recs(brief, tool_catalog)
+    if not rec_skills:
+        rec_skills = _heuristic_skill_recs(brief, skill_catalog)
+
+    # Ensure dependency sections exist in content body
+    if rec_skills or rec_tools:
+        try:
+            body = content
+            fm_end = -1
+            if body.startswith("---"):
+                fm_end = body.find("\n---", 3)
+            if fm_end >= 0:
+                head = body[: fm_end + len("\n---")]
+                body_part = body[fm_end + len("\n---") :].lstrip("\n")
+                body_part = _inject_dependency_sections(
+                    body_part,
+                    skills=rec_skills,
+                    tools=rec_tools,
+                    language=request.language,
+                )
+                content = f"{head}\n\n{body_part}".rstrip() + "\n"
+                validate_skill_content(content)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("dependency section inject skipped: %s", exc)
+
     return AIGenerateSkillResponse(
         content=content,
         name=name,
         description=description,
+        recommended_skills=rec_skills,
+        recommended_tools=rec_tools,
+        dependency_rationale=str(meta.get("dependency_rationale") or ""),
     )
 
 
@@ -861,3 +1291,211 @@ async def ai_optimize_skill_stream(request: AIOptimizeSkillRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post(
+    "/skills/ai/parse-sop",
+    response_model=ParseSopResponse,
+    summary="Parse an uploaded SOP document into process steps",
+)
+async def ai_parse_sop(
+    file: UploadFile = File(...),
+    language: str = "zh",
+) -> ParseSopResponse:
+    """Extract text from SOP upload and distill a process outline."""
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="empty file")
+    if len(raw) > 10 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="file too large (max 10MB)")
+
+    text = _extract_file_text(file.filename or "sop.txt", raw)
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="no text extracted from SOP")
+
+    lang = _normalize_language(language)
+    clipped = text.strip()[:14000]
+    if lang == "zh":
+        system = (
+            "你是流程分析专家。根据 SOP 原文提炼结构化流程。"
+            "只输出 JSON：{\"summary\":\"...\",\"process_steps\":[\"步骤1\",...],"
+            "\"entities\":[\"实体\"]}。process_steps 5～15 条，具体可执行。"
+        )
+        user = f"SOP 原文：\n{clipped}"
+    else:
+        system = (
+            "You extract process flows from SOP documents. "
+            "Return JSON only: {\"summary\":\"...\",\"process_steps\":[...],"
+            "\"entities\":[...]}. 5-15 concrete steps."
+        )
+        user = f"SOP text:\n{clipped}"
+
+    try:
+        raw_model = await _call_model_text(
+            system_prompt=system,
+            user_prompt=user,
+            stream=False,
+        )
+        data = _extract_json_object(str(raw_model or "")) or {}
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("SOP parse failed")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to parse SOP: {exc}",
+        ) from exc
+
+    steps = [
+        str(s).strip()
+        for s in (data.get("process_steps") or [])
+        if str(s).strip()
+    ]
+    entities = [
+        str(s).strip()
+        for s in (data.get("entities") or [])
+        if str(s).strip()
+    ]
+    summary = str(data.get("summary") or "").strip()
+    if not steps:
+        # naive fallback: split paragraphs
+        steps = [
+            ln.strip(" -•\t")
+            for ln in clipped.splitlines()
+            if len(ln.strip()) > 8
+        ][:10]
+    if not summary:
+        summary = clipped[:180].replace("\n", " ")
+
+    return ParseSopResponse(
+        text=clipped,
+        summary=summary,
+        process_steps=steps,
+        entities=entities,
+    )
+
+
+@router.post("/skills/ai/debug/run")
+async def ai_debug_run_skill(request: DebugRunRequest):
+    """Stream a real model run of a draft skill playbook."""
+
+    async def generate():
+        try:
+            skill = (request.skill_content or "").strip()
+            msg = (request.message or "").strip()
+            if not skill or not msg:
+                yield (
+                    "data: "
+                    + json.dumps({"error": "skill_content and message required"})
+                    + "\n\n"
+                )
+                return
+
+            body = skill
+            display = "draft-skill"
+            if body.startswith("---"):
+                end = body.find("\n---", 3)
+                if end >= 0:
+                    head = body[:end]
+                    for line in head.splitlines():
+                        if line.lower().startswith("name:"):
+                            display = (
+                                line.split(":", 1)[1].strip().strip("\"'")
+                            )
+                            break
+                    body = body[end + len("\n---") :].strip()
+
+            lang = _normalize_language(request.language)
+            if lang == "zh":
+                system_prompt = (
+                    f"你正在执行草稿 Skill「{display}」。严格按下列手册完成用户任务，"
+                    "给出可核对的结果；需要工具时在文字中说明你会如何使用"
+                    "browser_use/web_search 等工具。\n\n"
+                    f"===== SKILL PLAYBOOK =====\n{body}"
+                )
+            else:
+                system_prompt = (
+                    f"You are executing draft skill [{display}]. Follow the "
+                    "playbook below to fulfill the user task with a verifiable "
+                    "result.\n\n"
+                    f"===== SKILL PLAYBOOK =====\n{body}"
+                )
+
+            stream = await _call_model_text(
+                system_prompt=system_prompt,
+                user_prompt=msg,
+                stream=True,
+                model_slot_override=request.model_slot,
+            )
+            accumulated = ""
+            async for delta in stream:
+                if not delta:
+                    continue
+                accumulated += delta
+                yield (
+                    "data: "
+                    + json.dumps({"text": delta}, ensure_ascii=False)
+                    + "\n\n"
+                )
+            # Streaming extract can yield nothing on some providers; fall back.
+            if not accumulated.strip():
+                logger.warning(
+                    "skill debug stream empty; falling back to non-stream call",
+                )
+                full = await _call_model_text(
+                    system_prompt=system_prompt,
+                    user_prompt=msg,
+                    stream=False,
+                    model_slot_override=request.model_slot,
+                )
+                if full and str(full).strip():
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {"text": str(full)},
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                else:
+                    yield (
+                        "data: "
+                        + json.dumps(
+                            {
+                                "error": (
+                                    "模型未返回内容。请检查模型配置或换一个模型重试。"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        )
+                        + "\n\n"
+                    )
+                    return
+            yield f"data: {json.dumps({'done': True})}\n\n"
+        except HTTPException as exc:
+            yield (
+                "data: "
+                + json.dumps({"error": exc.detail}, ensure_ascii=False)
+                + "\n\n"
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("skill debug run failed")
+            yield (
+                "data: "
+                + json.dumps(
+                    {"error": f"Failed to debug skill: {exc}"},
+                    ensure_ascii=False,
+                )
+                + "\n\n"
+            )
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+

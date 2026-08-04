@@ -4,9 +4,13 @@ import { useTranslation } from "react-i18next";
 import { useAppMessage } from "@/hooks/useAppMessage";
 import { CopawWorkbenchShell } from "@/components/CopawWorkbenchShell";
 import { api } from "@/api";
-import type { MarketSkillSpec } from "@/api/modules/skill";
+import {
+  invalidateSkillCache,
+  type MarketSkillSpec,
+} from "@/api/modules/skill";
 import { FEATURED_COLLECTIONS, categoryIcon } from "./mocks";
 import { SkillCategoryIcon } from "./SkillCategoryIcon";
+import { SkillCreationModal } from "@/pages/Agent/Skills/components";
 import styles from "./index.module.less";
 
 type StoreSkillView = {
@@ -361,6 +365,7 @@ function SkillCard({
 export default function SkillStorePage() {
   const { t } = useTranslation();
   const { message } = useAppMessage();
+  const navigate = useNavigate();
   const PAGE_SIZE = 20;
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -376,12 +381,6 @@ export default function SkillStorePage() {
   const [sessionInstalledIds, setSessionInstalledIds] = useState<string[]>([]);
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
-  const [skillName, setSkillName] = useState("");
-  const [skillDesc, setSkillDesc] = useState("");
-  const [formStatus, setFormStatus] = useState<"idle" | "success" | "error">(
-    "idle",
-  );
-  const [formError, setFormError] = useState("");
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -473,12 +472,16 @@ export default function SkillStorePage() {
     try {
       const result = await api.installSkillFromMarket({ id: skill.id });
       if (result.installed && result.name) {
+        invalidateSkillCache({ pool: true });
         setInstalledNames((prev) => new Set(prev).add(result.name!));
         setSessionInstalledIds((prev) =>
           prev.includes(skill.id) ? prev : [...prev, skill.id],
         );
         message.success(
           t("skillStore.installSuccess", { name: result.name }),
+        );
+        navigate(
+          `/skill-pool?focus=${encodeURIComponent(result.name)}`,
         );
       }
     } catch (err: unknown) {
@@ -487,24 +490,6 @@ export default function SkillStorePage() {
     } finally {
       setInstallingId(null);
     }
-  };
-
-  const handleCreateSkill = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!skillName.trim()) {
-      setFormError(t("skillStore.nameRequired"));
-      setFormStatus("error");
-      return;
-    }
-    setFormStatus("success");
-    setSkillName("");
-    setSkillDesc("");
-    setFormError("");
-    setTimeout(() => {
-      setIsModalOpen(false);
-      setFormStatus("idle");
-      message.success(t("skillStore.createSuccessHint"));
-    }, 1200);
   };
 
   const categoryTabs = useMemo(() => {
@@ -619,81 +604,21 @@ export default function SkillStorePage() {
         )}
       </div>
 
-      {isModalOpen ? (
-        <div
-          className={styles.modalOverlay}
-          onClick={() => setIsModalOpen(false)}
-        >
-          <div
-            className={styles.modalDialog}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className={styles.modalHeader}>
-              <h3 className={styles.modalTitle}>{t("skillStore.newSkill")}</h3>
-              <button
-                type="button"
-                className={styles.modalClose}
-                onClick={() => setIsModalOpen(false)}
-              >
-                <i className="ri-close-line" />
-              </button>
-            </div>
-
-            {formStatus === "success" ? (
-              <div className={styles.successBox}>
-                <div className={styles.successIcon}>
-                  <i className="ri-check-line" />
-                </div>
-                <p>{t("skillStore.createSuccess")}</p>
-              </div>
-            ) : (
-              <form onSubmit={handleCreateSkill}>
-                <div className={styles.formField}>
-                  <label className={styles.formLabel}>
-                    {t("skillStore.skillName")}
-                  </label>
-                  <input
-                    type="text"
-                    value={skillName}
-                    onChange={(e) => setSkillName(e.target.value)}
-                    className={styles.formInput}
-                    placeholder={t("skillStore.skillNamePlaceholder")}
-                  />
-                </div>
-                <div className={styles.formField}>
-                  <label className={styles.formLabel}>
-                    {t("skillStore.skillDesc")}
-                  </label>
-                  <textarea
-                    value={skillDesc}
-                    onChange={(e) => setSkillDesc(e.target.value)}
-                    maxLength={500}
-                    rows={3}
-                    className={styles.formTextarea}
-                    placeholder={t("skillStore.skillDescPlaceholder")}
-                  />
-                  <p className={styles.formCount}>{skillDesc.length}/500</p>
-                </div>
-                {formError ? (
-                  <p className={styles.formError}>{formError}</p>
-                ) : null}
-                <div className={styles.formActions}>
-                  <button
-                    type="button"
-                    className={styles.cancelBtn}
-                    onClick={() => setIsModalOpen(false)}
-                  >
-                    {t("common.cancel")}
-                  </button>
-                  <button type="submit" className={styles.confirmBtn}>
-                    {t("skillStore.create")}
-                  </button>
-                </div>
-              </form>
-            )}
-          </div>
-        </div>
-      ) : null}
+      <SkillCreationModal
+        open={isModalOpen}
+        target="pool"
+        onClose={() => setIsModalOpen(false)}
+        onCreated={(result) => {
+          setIsModalOpen(false);
+          invalidateSkillCache({ pool: true });
+          void loadPoolInstalled();
+          if (result?.name) {
+            navigate(
+              `/skill-pool?focus=${encodeURIComponent(result.name)}`,
+            );
+          }
+        }}
+      />
     </CopawWorkbenchShell>
   );
 }

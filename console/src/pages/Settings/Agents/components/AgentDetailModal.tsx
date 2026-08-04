@@ -939,7 +939,7 @@ export function AgentDetailModal({
             ) : null}
 
             <div className={styles.footer}>
-              {isMyTeam && !isOwnMyTeamAgent ? (
+              {isMyTeam && !isOwnMyTeamAgent && !defaultAgent ? (
                 <Popconfirm
                   title={t("myTeam.removeConfirm")}
                   description={t("myTeam.removeConfirmDesc")}

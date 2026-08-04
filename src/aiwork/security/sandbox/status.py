@@ -3,11 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import asdict, dataclass, field
 
 from ...constant import EnvVarLoader
 from .docker_runner import DockerSandboxRunner
 from .settings import ResolvedSandboxSettings, load_sandbox_settings
+
+
+def _env_present(aiwork_key: str) -> bool:
+    """Return True if *aiwork_key* or its QWENPAW_/COPAW_ aliases are set."""
+    if aiwork_key in os.environ:
+        return True
+    suffix = aiwork_key[len("AIWORK_") :] if aiwork_key.startswith("AIWORK_") else aiwork_key
+    return any(
+        f"{prefix}{suffix}" in os.environ for prefix in ("QWENPAW_", "COPAW_")
+    )
 
 
 @dataclass(frozen=True)
@@ -83,13 +94,26 @@ async def get_execution_sandbox_status(
         containers=containers,
     )
 
+    # Only report env overrides when the variables are actually present.
+    # EnvVarLoader.get_str defaults to "" which would falsely trip the UI banner.
+    env_enabled = (
+        EnvVarLoader.get_str("AIWORK_EXECUTION_SANDBOX_ENABLED")
+        if _env_present("AIWORK_EXECUTION_SANDBOX_ENABLED")
+        else None
+    )
+    env_backend = (
+        EnvVarLoader.get_str("AIWORK_EXECUTION_SANDBOX_BACKEND")
+        if _env_present("AIWORK_EXECUTION_SANDBOX_BACKEND")
+        else None
+    )
+
     return ExecutionSandboxStatus(
         effective_enabled=resolved.enabled and resolved.backend != "off",
         effective_backend=resolved.backend,
         docker_available=docker_available,
         docker_image_present=docker_image_present,
         docker_image=resolved.docker_image,
-        env_enabled=EnvVarLoader.get_str("AIWORK_EXECUTION_SANDBOX_ENABLED"),
-        env_backend=EnvVarLoader.get_str("AIWORK_EXECUTION_SANDBOX_BACKEND"),
+        env_enabled=env_enabled,
+        env_backend=env_backend,
         session_containers=session_status,
     )

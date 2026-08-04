@@ -7,6 +7,7 @@ import {
   parseJwtPayload,
 } from "../../utils/authUsername";
 import { getSummonedAgentIds } from "../../utils/agentPresentationStorage";
+import { DEFAULT_AGENT_ID } from "../../utils/agentDisplayName";
 import { useWorkbench } from "./useWorkbench";
 import AgentStatusGrid from "./components/AgentStatusGrid";
 import ActivityFeed from "./components/ActivityFeed";
@@ -53,10 +54,12 @@ export default function WorkbenchPage() {
     };
   }, []);
 
-  // Only agents in「我的 AI 团队」(summoned), same as chat selector / MyTeam page
+  // Default + agents in「我的 AI 团队」(summoned)
   const filteredAgents = useMemo(() => {
     const summonedIds = getSummonedAgentIds();
-    return agents.filter((a) => summonedIds.has(a.id));
+    return agents.filter(
+      (a) => a.id === DEFAULT_AGENT_ID || summonedIds.has(a.id),
+    );
   }, [agents]);
 
   return (

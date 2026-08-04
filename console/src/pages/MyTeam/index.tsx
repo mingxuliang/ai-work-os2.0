@@ -21,6 +21,7 @@ import {
   removeAgentPresentation,
   saveAgentPresentation,
 } from "@/utils/agentPresentationStorage";
+import { DEFAULT_AGENT_ID } from "@/utils/agentDisplayName";
 import {
   appendAgentEditHistory,
   removeAgentEditHistory,
@@ -58,9 +59,13 @@ export default function MyTeamPage() {
   const [teamTick, setTeamTick] = useState(0);
   const { message } = useAppMessage();
 
-  // Only show summoned agents (no business-category filter on this page)
+  // Summoned agents + Default (always present, no summon needed)
   const summonedAgents = useMemo(
-    () => agents.filter((a) => loadAgentPresentation(a.id).summoned),
+    () =>
+      agents.filter(
+        (a) =>
+          a.id === DEFAULT_AGENT_ID || loadAgentPresentation(a.id).summoned,
+      ),
     [agents, teamTick],
   );
 
@@ -123,6 +128,10 @@ export default function MyTeamPage() {
 
   /** 取消召唤：适用于非本人创建（他人/共享）的 agent，仅从本页移除，不删除真实 agent */
   const handleRemoveFromTeam = (agentId: string) => {
+    if (agentId === DEFAULT_AGENT_ID) {
+      message.warning(t("agent.defaultAlwaysInTeam"));
+      return;
+    }
     saveAgentPresentation(agentId, { summoned: false });
     setTeamTick((n) => n + 1);
     message.success(t("myTeam.removeSuccess"));
@@ -130,6 +139,10 @@ export default function MyTeamPage() {
 
   /** 真实删除：仅适用于在「我的AI团队」中自己新建的 agent */
   const handleDelete = async (agentId: string) => {
+    if (agentId === DEFAULT_AGENT_ID) {
+      message.warning(t("agent.defaultNotDeletable"));
+      return;
+    }
     try {
       await deleteAgent(agentId);
       removeAgentPresentation(agentId);
